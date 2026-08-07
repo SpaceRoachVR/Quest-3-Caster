@@ -1,0 +1,160 @@
+# Quest 3 Caster
+
+Quest 3 Caster is a Windows Electron application for dependable Meta Quest 3 casting through ADB and a bundled `scrcpy` runtime. Connect the headset by USB each session, scan for it in the app, and start casting.
+
+## What the app does
+
+- Requires a USB connection each session to authorize ADB TCP/IP on port 5555. The headset IP is detected automatically; USB may be removed once the IP is confirmed.
+- Uses two locked profiles: **Low Latency** is the default; **Stabilized** is opt-in and adds GPU work plus approximately 100 ms of synchronized delay.
+- Locks H.264, Opus, Display 0, calibrated crop, resolution, FPS, buffering, and presentation in the native runtime. Choose either calibrated 16:9 output or a locked 1:1 eye crop; 1:1 reveals a Right eye switch and otherwise uses the left eye. There are no bitrate, codec, crop, FOV, resolution, or display-source controls to misconfigure.
+- Lets you include the optional headset microphone, keep the headset awake, and enable bounded automatic reconnect.
+- Keeps timestamped local `.txt` logs in the app-data folder. Open **Settings** to verify executable paths or open the log folder.
+
+## Headset compatibility
+
+**Quest 3 only. Quest 3S support is planned.**
+
+The capture profiles are calibrated against the Quest 3's specific 4128x2208 display: the crops are derived from that panel's lens mask, and the rotation correction from its panel cant. Preflight checks the display geometry and refuses to start on anything else rather than producing a mis-framed or tilted cast.
+
+A Quest 3S has different panel and lens geometry, so it needs its own measured crops and angles. That calibration is planned and will be measured on hardware, not estimated. Quest 2 and Quest Pro are not currently on the roadmap.
+
+## System requirements
+
+|  | Minimum | Recommended |
+| --- | --- | --- |
+| **Headset** | Meta Quest 3, Developer Mode enabled | Meta Quest 3 |
+| **OS** | 64-bit Windows 10 (22H2) | 64-bit Windows 11 |
+| **CPU** | Any modern 4-core x64 | 6-core or better |
+| **RAM** | 8 GB | 16 GB |
+| **GPU** | Any GPU with hardware H.264 decode | Discrete GPU with OpenCL 1.2+ (required for **Stabilized**) |
+| **Network** | 5 GHz Wi-Fi, headset and PC on the same LAN | Wi-Fi 6 access point, PC on wired Ethernet |
+| **Disk** | ~500 MB | ~500 MB |
+
+Notes on the ones that actually matter:
+
+- **Wi-Fi is the usual bottleneck.** The stream is H.264 at 40 Mbps. 2.4 GHz will not carry it reliably. Putting the PC on Ethernet and reserving 5 GHz (or 6 GHz) for the headset gives the most stable result.
+- **OpenCL is only needed for Stabilized.** Low Latency and both 1:1 modes need no GPU compute. If preflight finds no usable OpenCL device, Stabilized is offered as unavailable and Low Latency remains fully functional.
+- **Developer Mode is enabled in the Meta Horizon phone app**, not in the headset. Devices → your headset → Headset Settings → Developer Mode.
+- **OBS Studio** is not required to run the app, but is the intended capture target.
+
+## Prerequisites (building from source)
+
+Node.js 18 or later, in addition to the system requirements above. End users installing the release do not need Node.js — everything is bundled.
+
+## Distribution (end-user install)
+
+Download the latest `Quest 3 Caster Setup x.x.x.exe` from [GitHub Releases](https://github.com/SpaceRoachVR/Quest-3-Caster/releases). Run it and follow the installer. No additional software is required — Node.js, Electron, ADB, scrcpy, and all FFmpeg libraries are bundled inside the installer.
+
+> **SmartScreen notice (unsigned build):** Windows may display a "Windows protected your PC" prompt because the installer is not yet code-signed. Click **More info → Run anyway** to proceed. This warning will be resolved in a future release once a signing certificate is added.
+
+A portable `.zip` archive is also available on the releases page if you prefer not to use the installer.
+
+## Building a release
+
+```powershell
+npm install
+npm run native:verify        # confirm the bundled scrcpy/adb runtime is healthy
+npm run dist:dir             # smoke-test the unpacked layout (no installer generated)
+# Run dist/win-unpacked/Quest 3 Caster.exe and verify casting works
+npm run dist                 # produce dist/Quest 3 Caster Setup x.x.x.exe + .zip
+```
+
+## Installation and launch (development)
+
+```powershell
+npm install
+npm start
+```
+
+## Each session
+
+1. Connect the headset by USB and accept the USB debugging prompt in the headset.
+2. Click **Scan USB devices** in the app and select your Quest 3.
+3. Quest 3 Caster detects the local IP, enables legacy ADB TCP/IP on port 5555, and confirms readiness. The USB cable may be removed once the IP is shown.
+4. Click **Start casting**. The app connects wirelessly, runs a capability preflight, and launches scrcpy.
+5. Quest 3 Caster does not use Android's pairing-code workflow or Meta Horizon Link Auto-Connect because neither exposes an ADB connection the app can use.
+6. USB setup is required again after every headset restart because legacy ADB TCP/IP does not survive a reboot.
+7. Use **Low Latency** for responsive gameplay. Choose **Stabilized** only when the GPU and display preflight succeeds and its added delay is acceptable.
+8. Use **Settings** for custom ADB/scrcpy paths, executable validation, and the rolling local log folder.
+
+## Calibrated OBS capture profiles
+
+The native runtime owns the image-quality contract. On a verified 4128x2208 Quest 3 display each eye occupies a 2064x2208 half, and every profile crops one eye and lets the device downscale to the delivered size.
+
+The Quest composites each eye through a lens mask that leaves 16.6% of the display black, so a crop is bounded by the mask, not by the 2064x2208 eye rectangle. Crops below were chosen by flood-filling the mask out of a captured frame and measuring intrusion directly.
+
+- **Low Latency** crops the right eye at `1792:1008:2200:600` and delivers **1792x1008** with no resampling anywhere in the pipeline. H.264 at 40 Mbps/60 FPS, zero video buffer.
+- **1:1 modes** crop `1488:1488:288:360` (left) or `1488:1488:2352:360` (right) and the device downscales to **1080x1080**. Mask intrusion 0.00%, covering 72% of the eye width against 52% for a native 1080x1080 crop.
+- **Stabilized** crops `1808:1016:2192:596` as OpenCL stabilization headroom and centre-crops to **1680x944** after filtering. It stays 16:9-only because its filter pipeline is calibrated for that geometry.
+
+`presentation_angle` cancels the rotation the compositor bakes into the display buffer. Quest 3's two display panels are physically canted in opposite directions, so each eye is pre-rotated the opposite way. **The correction therefore depends on which eye a profile crops, not on the crop's shape:**
+
+| Eye | Angle | Profiles |
+| --- | --- | --- |
+| Left (x < 2064) | `20` | 1:1 left |
+| Right (x >= 2064) | `-22` | Low Latency, Stabilized, 1:1 right |
+
+Measured on hardware against the Quest menu, which is roll-locked to gravity and therefore a valid horizontal reference. Note that three of the four profiles crop the right eye, so `-22` is the common case and a left-eye profile is the exception. Do not collapse these to one shared value, and do not derive them from the crop dimensions — a 16:9 right-eye crop and a square right-eye crop need the *same* angle, while two square crops of opposite eyes need *opposite* angles.
+
+`addCrop` and `addAngle` compose into a single affine transform that samples the full display texture, so the rotation pulls in real pixels from outside the crop rather than black — **provided the rotated sample stays inside one eye.**
+
+**Every crop is sized so the rotated sample stays inside one eye.** A crop of width `w` and height `h` rotated by 22° samples `w·cos22 + h·sin22` pixels across the 2064px eye, so the crop width is capped at 1814px:
+
+| Profile | Crop | Rotated sample | Delivered |
+| --- | --- | --- | --- |
+| Low Latency | `1792:1008:2200:600` | 2039px — fits | 1792x1008 |
+| Stabilized | `1808:1016:2192:596` | 2057px — fits | 1680x944 after filtering |
+| 1:1 left / right | `1488:1488` | 1937px — fits | 1080x1080 |
+
+Exceeding that ceiling is not a rounding error: a `1920x1080` crop samples 2185px and pulls a sliver of the *other* eye into one corner with off-display black in the opposite one.
+
+To re-calibrate, sweep `--angle` on unlocked scrcpy with the shipping crop and judge against the Quest menu. Because the source is barrel-distorted, no single angle levels every region at once — calibrate against the centre of frame.
+
+The application never reports a stream active until the native process confirms readiness. If Stabilized cannot satisfy preflight or fails during start, it falls back exactly once to Low Latency. Reconnect is generation-safe and bounded; a stop or replacement cancels pending reconnects.
+
+Run this before relying on a native bundle update:
+
+```powershell
+npm run native:verify
+```
+
+Stabilized remains opt-in until the physical Quest and OBS acceptance checklist passes. Verify actual framing, no seam or fisheye edge, A/V sync within ±50 ms, and no more than 120 ms added delay. Also physically confirm the new left/right 1:1 framing before relying on either square crop in a production recording. Automated tests do not satisfy those physical gates; restore Low Latency 16:9 if a physical check fails.
+
+## OBS Studio
+
+Use Window Capture and select `[scrcpy.exe]: Quest 3 Stream (Caster)`. The locked profiles already produce the final calibrated image (1792x1008 for Low Latency, 1680x944 for Stabilized, 1080x1080 for the 1:1 modes); do not apply manual crop corrections in OBS.
+
+## Rebuilding the pinned Windows native bundle
+
+The bundled runtime is intentionally pinned and verified. `npm run native:build` rebuilds it; `npm run native:verify` checks the manifest, executable capabilities, and required native probes before use. The replacement workflow supports a manifest-verified shared-library replacement only; preserve the rollback bundle until verification succeeds.
+
+```powershell
+npm run native:replace-libraries -- --source C:\path\to\replacement
+```
+
+The source directory must include a compatible `replacement-manifest.json` describing the replacement FFmpeg libraries.
+
+## Project structure
+
+- `main.js` — Electron lifecycle, ADB/scrcpy processes, IPC, file logging, and Windows audio control.
+- `preload.js` — narrow context-isolated renderer API.
+- `renderer.js` — USB scan and connect flow, cast controls, settings, and safe UI state recovery.
+- `lib/file-logger.js` — rolling local text logs.
+- `native/` — pinned native profile and stabilization sources.
+
+## Verification
+
+```powershell
+npm test
+npm run native:verify
+```
+
+Also perform physical acceptance for USB authorization, legacy ADB TCP/IP setup, USB cable removal before casting, no-device/unauthorized/offline states, failed executable launch, normal stop, unexpected child exit, and OBS capture before a release.
+
+## Support
+
+If Quest 3 Caster saves you some setup time, you can buy me a coffee:
+
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-PayPal-00457C?logo=paypal&logoColor=white)](https://www.paypal.com/ncp/payment/D8CB4B9H5JD6S)
+
+Or use the direct link: <https://www.paypal.com/ncp/payment/D8CB4B9H5JD6S>

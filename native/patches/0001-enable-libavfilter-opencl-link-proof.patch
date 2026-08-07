@@ -1,0 +1,78 @@
+From 8ebfe7f4f6d96bfc76db9e8e1e2b75d808d36be8 Mon Sep 17 00:00:00 2001
+From: Quest 3 Caster Build <build@quest3caster.invalid>
+Date: Fri, 17 Jul 2026 10:00:00 -0500
+Subject: [PATCH] build: enable libavfilter and OpenCL link proof
+
+Keep normal scrcpy behavior unchanged while making the Windows client link
+libavfilter and exposing its linked version through the existing --version
+dependency report. Build the single OpenCL filter needed by the later
+stabilization work.
+---
+ app/deps/ffmpeg.sh | 4 +++-
+ app/meson.build    | 1 +
+ app/src/version.c  | 10 ++++++++++
+ 3 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/app/deps/ffmpeg.sh b/app/deps/ffmpeg.sh
+index 2d4007a9..78affd3e 100755
+--- a/app/deps/ffmpeg.sh
++++ b/app/deps/ffmpeg.sh
+@@ -52,12 +52,14 @@ else
+         --disable-programs
+         --disable-doc
+         --disable-swscale
+-        --disable-avfilter
++        --enable-avfilter
+         --disable-network
+         --disable-everything
+         --disable-vulkan
+         --disable-vaapi
+         --disable-vdpau
++        --enable-opencl
++        --enable-filter=deshake_opencl
+         --enable-swresample
+         --enable-libdav1d
+         --enable-decoder=h264
+diff --git a/app/meson.build b/app/meson.build
+index 8816426f..953114af 100644
+--- a/app/meson.build
++++ b/app/meson.build
+@@ -123,6 +123,7 @@ cc = meson.get_compiler('c')
+ static = get_option('static')
+ 
+ dependencies = [
++    dependency('libavfilter', static: static),
+     dependency('libavformat', version: '>= 57.33', static: static),
+     dependency('libavcodec', version: '>= 57.37', static: static),
+     dependency('libavutil', static: static),
+diff --git a/app/src/version.c b/app/src/version.c
+index 9a22a7e9..651dc923 100644
+--- a/app/src/version.c
++++ b/app/src/version.c
+@@ -1,6 +1,7 @@
+ #include "version.h"
+ 
+ #include <stdio.h>
++#include <libavfilter/avfilter.h>
+ #include <libavcodec/avcodec.h>
+ #include <libavformat/avformat.h>
+ #include <libavutil/avutil.h>
+@@ -16,6 +17,15 @@ void
+ scrcpy_print_version(void) {
+     printf("\nDependencies (compiled / linked):\n");
+ 
++    unsigned avfilter = avfilter_version();
++    printf(" - libavfilter: %u.%u.%u / %u.%u.%u\n",
++           LIBAVFILTER_VERSION_MAJOR,
++           LIBAVFILTER_VERSION_MINOR,
++           LIBAVFILTER_VERSION_MICRO,
++           AV_VERSION_MAJOR(avfilter),
++           AV_VERSION_MINOR(avfilter),
++           AV_VERSION_MICRO(avfilter));
++
+     int sdl = SDL_GetVersion();
+     printf(" - SDL: %u.%u.%u / %u.%u.%u\n",
+            SDL_MAJOR_VERSION,
+-- 
+2.45.1.windows.1
+

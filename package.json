@@ -1,0 +1,85 @@
+{
+  "name": "quest-3-caster",
+  "version": "1.0.0-beta.1",
+  "description": "Wireless Quest 3 cast management app via ADB and scrcpy",
+  "main": "main.js",
+  "scripts": {
+    "native:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1",
+    "native:replace-libraries": "node scripts/replace-native-libraries.js",
+    "native:verify": "node scripts/verify-native-bundle.js",
+    "ui:inspect": "node scripts/inspect-renderer-ui.js",
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:dir": "electron-builder --dir",
+    "test": "node --test"
+  },
+  "keywords": [
+    "meta",
+    "quest",
+    "scrcpy",
+    "cast",
+    "adb",
+    "vr"
+  ],
+  "author": "SpaceRoachVR",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.7"
+  },
+  "build": {
+    "appId": "com.spaceroachvr.quest3caster",
+    "productName": "Quest 3 Caster",
+    "copyright": "Copyright © 2024 SpaceRoachVR",
+    "icon": "build/icon.ico",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "lib/**/*",
+      "resources/ui/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/native/win32-x64",
+        "to": "native/win32-x64",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Quest 3 Caster",
+      "uninstallDisplayName": "Quest 3 Caster",
+      "deleteAppDataOnUninstall": false
+    },
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    }
+  }
+}

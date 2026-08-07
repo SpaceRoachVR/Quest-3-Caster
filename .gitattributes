@@ -1,0 +1,16 @@
+native/patches/*.patch whitespace=-blank-at-eol,-blank-at-eof
+
+# The bundle is hash-verified byte for byte, so nothing inside it may be
+# normalised. Without this, Git rewrites line endings in the text members
+# (scrcpy-noconsole.vbs, open_a_terminal_here.bat, the licences) on checkout and
+# `npm run native:verify` fails with a hash mismatch on a clean clone.
+resources/native/win32-x64/** -text
+
+# The verified native runtime and the app icons are release inputs, not build
+# output. They are tracked in Git LFS so a fresh clone can run `npm run dist`
+# without a WSL toolchain. Rebuild them with `npm run native:build`.
+*.dll filter=lfs diff=lfs merge=lfs -text
+*.exe filter=lfs diff=lfs merge=lfs -text
+*.ico filter=lfs diff=lfs merge=lfs -text
+*.png filter=lfs diff=lfs merge=lfs -text
+resources/native/win32-x64/scrcpy-server filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,2787 @@
+From 10c3179b3ae26cbdb156121f323528c80db7d02e Mon Sep 17 00:00:00 2001
+From: Quest 3 Caster Build <build@quest3caster.invalid>
+Date: Sat, 18 Jul 2026 00:17:30 -0500
+Subject: [PATCH] feat: add locked OBS profiles and OpenCL stabilizer
+
+---
+ app/deps/ffmpeg.sh                            |  20 +
+ .../0001-add-metadata-dependencies.patch      |   7 +
+ .../ffmpeg/0002-own-framequeue-global.patch   |   6 +
+ .../0003-remove-stack-framequeue-global.patch |   7 +
+ .../0004-use-owned-framequeue-global.patch    |   8 +
+ .../0005-export-transform-metadata.patch      |  24 +
+ app/meson.build                               |   7 +
+ app/src/cli.c                                 | 110 +++
+ app/src/frame_buffer.c                        |  17 +
+ app/src/frame_buffer.h                        |   6 +
+ app/src/main.c                                |  12 +-
+ app/src/options.c                             |   4 +
+ app/src/options.h                             |   5 +
+ app/src/q3c/capabilities.c                    |  45 ++
+ app/src/q3c/capabilities.h                    |   9 +
+ app/src/q3c/native_event.c                    | 156 +++++
+ app/src/q3c/native_event.h                    |  29 +
+ app/src/q3c/profile.c                         |  97 +++
+ app/src/q3c/profile.h                         |  46 ++
+ app/src/q3c/render_ack.c                      |  67 ++
+ app/src/q3c/render_ack.h                      |  44 ++
+ app/src/q3c/render_path.c                     |  63 ++
+ app/src/q3c/render_path.h                     |  26 +
+ app/src/q3c/stabilization_filter.c            | 657 ++++++++++++++++++
+ app/src/q3c/stabilization_filter.h            |  85 +++
+ app/src/q3c/stabilization_sink.c              | 382 ++++++++++
+ app/src/q3c/stabilization_sink.h              |  80 +++
+ app/src/scrcpy.c                              |  50 +-
+ app/src/screen.c                              |  70 +-
+ app/src/screen.h                              |  13 +
+ app/src/trait/packet_sink.h                   |   1 +
+ app/src/util/sdl.c                            |   4 +-
+ app/src/util/sdl.h                            |   2 +-
+ 33 files changed, 2127 insertions(+), 32 deletions(-)
+ create mode 100644 app/deps/patches/ffmpeg/0001-add-metadata-dependencies.patch
+ create mode 100644 app/deps/patches/ffmpeg/0002-own-framequeue-global.patch
+ create mode 100644 app/deps/patches/ffmpeg/0003-remove-stack-framequeue-global.patch
+ create mode 100644 app/deps/patches/ffmpeg/0004-use-owned-framequeue-global.patch
+ create mode 100644 app/deps/patches/ffmpeg/0005-export-transform-metadata.patch
+ create mode 100644 app/src/q3c/capabilities.c
+ create mode 100644 app/src/q3c/capabilities.h
+ create mode 100644 app/src/q3c/native_event.c
+ create mode 100644 app/src/q3c/native_event.h
+ create mode 100644 app/src/q3c/profile.c
+ create mode 100644 app/src/q3c/profile.h
+ create mode 100644 app/src/q3c/render_ack.c
+ create mode 100644 app/src/q3c/render_ack.h
+ create mode 100644 app/src/q3c/render_path.c
+ create mode 100644 app/src/q3c/render_path.h
+ create mode 100644 app/src/q3c/stabilization_filter.c
+ create mode 100644 app/src/q3c/stabilization_filter.h
+ create mode 100644 app/src/q3c/stabilization_sink.c
+ create mode 100644 app/src/q3c/stabilization_sink.h
+
+diff --git a/app/deps/ffmpeg.sh b/app/deps/ffmpeg.sh
+index 78affd3..8907d9d 100755
+--- a/app/deps/ffmpeg.sh
++++ b/app/deps/ffmpeg.sh
+@@ -9,6 +9,7 @@ SHA256SUM=464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
+ 
+ PROJECT_DIR="ffmpeg-$VERSION"
+ FILENAME="$PROJECT_DIR.tar.xz"
++FFMPEG_PATCH_DIRECTORY="$PWD/patches/ffmpeg"
+ 
+ cd "$SOURCES_DIR"
+ 
+@@ -20,6 +21,19 @@ else
+     tar xf "$FILENAME"  # First level directory is "$PROJECT_DIR"
+ fi
+ 
++for ffmpeg_patch in "$FFMPEG_PATCH_DIRECTORY"/*.patch
++do
++    if patch --dry-run --silent -d "$PROJECT_DIR" -p1 < "$ffmpeg_patch"
++    then
++        patch -d "$PROJECT_DIR" -p1 < "$ffmpeg_patch"
++    elif ! patch --dry-run --silent --reverse -d "$PROJECT_DIR" -p1 \
++            < "$ffmpeg_patch"
++    then
++        echo "FFmpeg patch does not apply cleanly: $ffmpeg_patch" >&2
++        exit 1
++    fi
++done
++
+ mkdir -p "$BUILD_DIR/$PROJECT_DIR"
+ cd "$BUILD_DIR/$PROJECT_DIR"
+ 
+@@ -60,6 +74,13 @@ else
+         --disable-vdpau
+         --enable-opencl
+         --enable-filter=deshake_opencl
++        --enable-filter=buffer
++        --enable-filter=buffersink
++        --enable-filter=crop
++        --enable-filter=format
++        --enable-filter=lenscorrection
++        --enable-filter=hwdownload
++        --enable-filter=hwupload
+         --enable-swresample
+         --enable-libdav1d
+         --enable-decoder=h264
+diff --git a/app/deps/patches/ffmpeg/0001-add-metadata-dependencies.patch b/app/deps/patches/ffmpeg/0001-add-metadata-dependencies.patch
+new file mode 100644
+index 0000000..a8ce1fb
+--- /dev/null
++++ b/app/deps/patches/ffmpeg/0001-add-metadata-dependencies.patch
+@@ -0,0 +1,7 @@
++--- a/libavfilter/vf_deshake_opencl.c
+++++ b/libavfilter/vf_deshake_opencl.c
++@@ -45,2 +45,4 @@
+++#include <stdio.h>
++ #include <float.h>
+++#include "libavutil/dict.h"
++ #include "libavutil/lfg.h"
+diff --git a/app/deps/patches/ffmpeg/0002-own-framequeue-global.patch b/app/deps/patches/ffmpeg/0002-own-framequeue-global.patch
+new file mode 100644
+index 0000000..51b854c
+--- /dev/null
++++ b/app/deps/patches/ffmpeg/0002-own-framequeue-global.patch
+@@ -0,0 +1,6 @@
++--- a/libavfilter/vf_deshake_opencl.c
+++++ b/libavfilter/vf_deshake_opencl.c
++@@ -201,2 +201,3 @@ typedef struct DeshakeOpenCLContext {
++     // FIFO frame queue used to buffer future frames for processing
+++    FFFrameQueueGlobal fqg;
++     FFFrameQueue fq;
+diff --git a/app/deps/patches/ffmpeg/0003-remove-stack-framequeue-global.patch b/app/deps/patches/ffmpeg/0003-remove-stack-framequeue-global.patch
+new file mode 100644
+index 0000000..7c8191b
+--- /dev/null
++++ b/app/deps/patches/ffmpeg/0003-remove-stack-framequeue-global.patch
+@@ -0,0 +1,7 @@
++--- a/libavfilter/vf_deshake_opencl.c
+++++ b/libavfilter/vf_deshake_opencl.c
++@@ -1119,4 +1119,3 @@ static int deshake_opencl_init(AVFilterContext *avctx)
++     int err;
++     cl_ulong8 zeroed_ulong8;
++-    FFFrameQueueGlobal fqg;
++     cl_image_format grayscale_format;
+diff --git a/app/deps/patches/ffmpeg/0004-use-owned-framequeue-global.patch b/app/deps/patches/ffmpeg/0004-use-owned-framequeue-global.patch
+new file mode 100644
+index 0000000..6bec9f3
+--- /dev/null
++++ b/app/deps/patches/ffmpeg/0004-use-owned-framequeue-global.patch
+@@ -0,0 +1,8 @@
++--- a/libavfilter/vf_deshake_opencl.c
+++++ b/libavfilter/vf_deshake_opencl.c
++@@ -1155,3 +1155,3 @@ static int config_input(AVFilterLink *inlink)
++-    ff_framequeue_global_init(&fqg);
++-    ff_framequeue_init(&ctx->fq, &fqg);
+++    ff_framequeue_global_init(&ctx->fqg);
+++    ff_framequeue_init(&ctx->fq, &ctx->fqg);
++     ctx->eof = 0;
+diff --git a/app/deps/patches/ffmpeg/0005-export-transform-metadata.patch b/app/deps/patches/ffmpeg/0005-export-transform-metadata.patch
+new file mode 100644
+index 0000000..ab367bc
+--- /dev/null
++++ b/app/deps/patches/ffmpeg/0005-export-transform-metadata.patch
+@@ -0,0 +1,24 @@
++--- a/libavfilter/vf_deshake_opencl.c
+++++ b/libavfilter/vf_deshake_opencl.c
++@@ -1700,5 +1700,20 @@ static int filter_frame(AVFilterLink *link, AVFrame *input_frame)
++         err = av_frame_copy_props(transformed_frame, input_frame);
++         if (err < 0)
++             goto fail;
+++
+++        char q3c_transform[256];
+++        int q3c_transform_length = snprintf(
+++            q3c_transform, sizeof(q3c_transform),
+++            "%.9g,%.9g,%.9g,%.9g,%.9g,%.9g",
+++            transform_y[0], transform_y[1], transform_y[2],
+++            transform_y[3], transform_y[4], transform_y[5]);
+++        if (q3c_transform_length < 0
+++                || q3c_transform_length >= (int) sizeof(q3c_transform)) {
+++            err = AVERROR(EINVAL);
+++            goto fail;
+++        }
+++        err = av_dict_set(&transformed_frame->metadata,
+++                          "lavfi.q3c.transform_y", q3c_transform, 0);
+++        if (err < 0)
+++            goto fail;
++-
++         av_frame_free(&cropped_frame);
+diff --git a/app/meson.build b/app/meson.build
+index 953114a..3914ec4 100644
+--- a/app/meson.build
++++ b/app/meson.build
+@@ -26,6 +26,13 @@ src = [
+     'src/mouse_sdk.c',
+     'src/opengl.c',
+     'src/options.c',
++    'src/q3c/capabilities.c',
++    'src/q3c/native_event.c',
++    'src/q3c/profile.c',
++    'src/q3c/render_ack.c',
++    'src/q3c/render_path.c',
++    'src/q3c/stabilization_filter.c',
++    'src/q3c/stabilization_sink.c',
+     'src/packet_merger.c',
+     'src/receiver.c',
+     'src/recorder.c',
+diff --git a/app/src/cli.c b/app/src/cli.c
+index 1624c29..76c347a 100644
+--- a/app/src/cli.c
++++ b/app/src/cli.c
+@@ -111,6 +111,9 @@ enum {
+     OPT_RENDER_FIT,
+     OPT_IGNORE_VIDEO_ENCODER_CONSTRAINTS,
+     OPT_NO_TERMINAL_TITLE,
++    OPT_Q3C_PROFILE,
++    OPT_Q3C_GENERATION,
++    OPT_Q3C_CAPABILITIES,
+ };
+ 
+ struct sc_option {
+@@ -147,6 +150,23 @@ struct sc_getopt_adapter {
+ };
+ 
+ static const struct sc_option options[] = {
++    {
++        .longopt_id = OPT_Q3C_PROFILE,
++        .longopt = "q3c-profile",
++        .argdesc = "profile-id",
++        .text = "Select a locked Quest 3 Caster OBS profile.",
++    },
++    {
++        .longopt_id = OPT_Q3C_GENERATION,
++        .longopt = "q3c-generation",
++        .argdesc = "positive-integer",
++        .text = "Attach a native stream generation token.",
++    },
++    {
++        .longopt_id = OPT_Q3C_CAPABILITIES,
++        .longopt = "q3c-capabilities",
++        .text = "Print the Quest 3 Caster native capability JSON and exit.",
++    },
+     {
+         .longopt_id = OPT_ALWAYS_ON_TOP,
+         .longopt = "always-on-top",
+@@ -2491,13 +2511,33 @@ static bool
+ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
+                        const char *optstring, const struct option *longopts) {
+     struct scrcpy_options *opts = &args->opts;
++    bool q3c_locked_option_seen = false;
+ 
+     optind = 0; // reset to start from the first argument in tests
+ 
+     int c;
+     while ((c = getopt_long(argc, argv, optstring, longopts, NULL)) != -1) {
++        switch (c) {
++            case 'h':
++            case 's':
++            case 'v':
++            case OPT_DISPLAY_ID:
++            case OPT_WINDOW_TITLE:
++            case OPT_RENDER_DRIVER:
++            case OPT_Q3C_PROFILE:
++            case OPT_Q3C_GENERATION:
++            case OPT_Q3C_CAPABILITIES:
++                break;
++            case OPT_ANGLE:
++                q3c_locked_option_seen = true;
++                break;
++            default:
++                q3c_locked_option_seen = true;
++                break;
++        }
+         switch (c) {
+             case 'b':
++                q3c_locked_option_seen = true;
+                 if (!parse_bit_rate(optarg, &opts->video_bit_rate)) {
+                     return false;
+                 }
+@@ -2508,6 +2546,7 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
+                 }
+                 break;
+             case OPT_CROP:
++                q3c_locked_option_seen = true;
+                 opts->crop = optarg;
+                 break;
+             case OPT_DISPLAY_ID:
+@@ -2541,9 +2580,11 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
+                 }
+                 break;
+             case OPT_MAX_FPS:
++                q3c_locked_option_seen = true;
+                 opts->max_fps = optarg;
+                 break;
+             case 'm':
++                q3c_locked_option_seen = true;
+                 if (!parse_max_size(optarg, &opts->max_size)) {
+                     return false;
+                 }
+@@ -2697,6 +2738,7 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
+                 opts->forward_key_repeat = false;
+                 break;
+             case OPT_VIDEO_CODEC_OPTIONS:
++                q3c_locked_option_seen = true;
+                 opts->video_codec_options = optarg;
+                 break;
+             case OPT_AUDIO_CODEC_OPTIONS:
+@@ -2726,6 +2768,7 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
+                 opts->power_off_on_close = true;
+                 break;
+             case OPT_VIDEO_BUFFER:
++                q3c_locked_option_seen = true;
+                 if (!parse_buffering_time(optarg, &opts->video_buffer)) {
+                     return false;
+                 }
+@@ -2756,6 +2799,7 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
+                 opts->start_fps_counter = true;
+                 break;
+             case OPT_VIDEO_CODEC:
++                q3c_locked_option_seen = true;
+                 if (!parse_video_codec(optarg, &opts->video_codec)) {
+                     return false;
+                 }
+@@ -2812,11 +2856,13 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
+                 opts->require_audio = true;
+                 break;
+             case OPT_AUDIO_BUFFER:
++                q3c_locked_option_seen = true;
+                 if (!parse_buffering_time(optarg, &opts->audio_buffer)) {
+                     return false;
+                 }
+                 break;
+             case OPT_AUDIO_OUTPUT_BUFFER:
++                q3c_locked_option_seen = true;
+                 if (!parse_audio_output_buffer(optarg,
+                                                &opts->audio_output_buffer)) {
+                     return false;
+@@ -2945,6 +2991,30 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
+             case OPT_NO_TERMINAL_TITLE:
+                 opts->update_terminal_title = false;
+                 break;
++            case OPT_Q3C_PROFILE:
++                if (opts->q3c_profile_id != Q3C_PROFILE_NONE
++                        || !q3c_profile_parse(optarg,
++                                              &opts->q3c_profile_id)) {
++                    LOGE("Invalid or duplicate --q3c-profile");
++                    return false;
++                }
++                break;
++            case OPT_Q3C_GENERATION:
++                if (opts->q3c_generation_set
++                        || !q3c_generation_parse(optarg,
++                                                 &opts->q3c_generation)) {
++                    LOGE("Invalid or duplicate --q3c-generation");
++                    return false;
++                }
++                opts->q3c_generation_set = true;
++                break;
++            case OPT_Q3C_CAPABILITIES:
++                if (opts->q3c_capabilities) {
++                    LOGE("Duplicate --q3c-capabilities");
++                    return false;
++                }
++                opts->q3c_capabilities = true;
++                break;
+             default:
+                 // getopt prints the error message on stderr
+                 return false;
+@@ -2957,6 +3027,52 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
+         return false;
+     }
+ 
++    if (opts->q3c_capabilities) {
++        if (opts->q3c_profile_id != Q3C_PROFILE_NONE
++                || opts->q3c_generation_set || q3c_locked_option_seen) {
++            LOGE("--q3c-capabilities cannot be combined with stream options");
++            return false;
++        }
++        return true;
++    }
++
++    if (opts->q3c_profile_id != Q3C_PROFILE_NONE) {
++        if (!opts->q3c_generation_set || q3c_locked_option_seen) {
++            LOGE("Locked OBS profiles require exactly one generation and "
++                 "reject custom codec/crop/rate/buffer options");
++            return false;
++        }
++        if (!opts->window || !opts->video || !opts->video_playback) {
++            LOGE("Locked OBS profile video streams require a window, video "
++                 "capture, and video playback");
++            return false;
++        }
++        const struct q3c_profile *profile =
++            q3c_profile_get(opts->q3c_profile_id);
++        assert(profile);
++        opts->crop = profile->server_crop;
++        opts->video_codec = SC_CODEC_H264;
++        opts->video_bit_rate = profile->video_bit_rate;
++        opts->max_fps = "60";
++        opts->max_size = profile->stabilized ? 0 : profile->output_width;
++        opts->video_buffer = 0;
++        opts->downsize_on_error = false;
++        opts->window_width = profile->window_width;
++        opts->window_height = profile->window_height;
++        opts->angle = profile->presentation_angle;
++        if (opts->audio) {
++            opts->audio_source = SC_AUDIO_SOURCE_PLAYBACK;
++            opts->audio_codec = SC_CODEC_OPUS;
++            opts->audio_dup = true;
++        }
++        if (profile->stabilized) {
++            opts->audio_buffer = SC_TICK_FROM_MS(100);
++        }
++    } else if (opts->q3c_generation_set) {
++        LOGE("--q3c-generation requires --q3c-profile");
++        return false;
++    }
++
+     // If a TCP/IP address is provided, then tcpip must be enabled
+     assert(opts->tcpip || !opts->tcpip_dst);
+ 
+diff --git a/app/src/frame_buffer.c b/app/src/frame_buffer.c
+index 699a3f3..dba8c2d 100644
+--- a/app/src/frame_buffer.c
++++ b/app/src/frame_buffer.c
+@@ -62,6 +62,14 @@ sc_frame_buffer_push(struct sc_frame_buffer *fb, const AVFrame *frame) {
+     return true;
+ }
+ 
++void
++sc_frame_buffer_discard(struct sc_frame_buffer *fb) {
++    if (!fb->pending_frame_consumed) {
++        av_frame_unref(fb->pending_frame);
++        fb->pending_frame_consumed = true;
++    }
++}
++
+ void
+ sc_frame_buffer_consume(struct sc_frame_buffer *fb, AVFrame *dst) {
+     assert(!fb->pending_frame_consumed);
+@@ -71,3 +79,12 @@ sc_frame_buffer_consume(struct sc_frame_buffer *fb, AVFrame *dst) {
+     // av_frame_move_ref() resets its source frame, so no need to call
+     // av_frame_unref()
+ }
++
++bool
++sc_frame_buffer_try_consume(struct sc_frame_buffer *fb, AVFrame *dst) {
++    if (!sc_frame_buffer_has_frame(fb)) {
++        return false;
++    }
++    sc_frame_buffer_consume(fb, dst);
++    return true;
++}
+diff --git a/app/src/frame_buffer.h b/app/src/frame_buffer.h
+index f6fc36d..4e03899 100644
+--- a/app/src/frame_buffer.h
++++ b/app/src/frame_buffer.h
+@@ -37,7 +37,13 @@ sc_frame_buffer_has_frame(struct sc_frame_buffer *fb);
+ bool
+ sc_frame_buffer_push(struct sc_frame_buffer *fb, const AVFrame *frame);
+ 
++void
++sc_frame_buffer_discard(struct sc_frame_buffer *fb);
++
+ void
+ sc_frame_buffer_consume(struct sc_frame_buffer *fb, AVFrame *dst);
+ 
++bool
++sc_frame_buffer_try_consume(struct sc_frame_buffer *fb, AVFrame *dst);
++
+ #endif
+diff --git a/app/src/main.c b/app/src/main.c
+index 4711742..ecd67cd 100644
+--- a/app/src/main.c
++++ b/app/src/main.c
+@@ -18,6 +18,7 @@
+ #include "util/net.h"
+ #include "util/term.h"
+ #include "version.h"
++#include "q3c/capabilities.h"
+ 
+ #ifdef _WIN32
+ #include <windows.h>
+@@ -33,9 +34,6 @@ main_scrcpy(int argc, char *argv[]) {
+     setbuf(stderr, NULL);
+ #endif
+ 
+-    printf("scrcpy " SCRCPY_VERSION
+-           " <https://github.com/Genymobile/scrcpy>\n");
+-
+     struct scrcpy_cli_args args = {
+         .opts = scrcpy_options_default,
+         .help = false,
+@@ -56,6 +54,14 @@ main_scrcpy(int argc, char *argv[]) {
+         goto end;
+     }
+ 
++    if (args.opts.q3c_capabilities) {
++        return q3c_print_capabilities() ? SCRCPY_EXIT_SUCCESS
++                                        : SCRCPY_EXIT_FAILURE;
++    }
++
++    printf("scrcpy " SCRCPY_VERSION
++           " <https://github.com/Genymobile/scrcpy>\n");
++
+     sc_set_log_level(args.opts.log_level);
+ 
+     if (args.opts.update_terminal_title) {
+diff --git a/app/src/options.c b/app/src/options.c
+index c7e9a3f..07f5ea8 100644
+--- a/app/src/options.c
++++ b/app/src/options.c
+@@ -3,6 +3,10 @@
+ #include <stddef.h>
+ 
+ const struct scrcpy_options scrcpy_options_default = {
++    .q3c_profile_id = Q3C_PROFILE_NONE,
++    .q3c_generation = 0,
++    .q3c_generation_set = false,
++    .q3c_capabilities = false,
+     .serial = NULL,
+     .crop = NULL,
+     .record_filename = NULL,
+diff --git a/app/src/options.h b/app/src/options.h
+index 5b84c2e..52438bc 100644
+--- a/app/src/options.h
++++ b/app/src/options.h
+@@ -8,6 +8,7 @@
+ #include <stdint.h>
+ 
+ #include "util/tick.h"
++#include "q3c/profile.h"
+ 
+ enum sc_log_level {
+     SC_LOG_LEVEL_VERBOSE,
+@@ -237,6 +238,10 @@ struct sc_port_range {
+ #define SC_WINDOW_POSITION_UNDEFINED (-0x8000)
+ 
+ struct scrcpy_options {
++    enum q3c_profile_id q3c_profile_id;
++    uint64_t q3c_generation;
++    bool q3c_generation_set;
++    bool q3c_capabilities;
+     const char *serial;
+     const char *crop;
+     const char *record_filename;
+diff --git a/app/src/q3c/capabilities.c b/app/src/q3c/capabilities.c
+new file mode 100644
+index 0000000..33ee51b
+--- /dev/null
++++ b/app/src/q3c/capabilities.c
+@@ -0,0 +1,45 @@
++#include "q3c/capabilities.h"
++
++#include <stdio.h>
++
++#include <libavutil/pixfmt.h>
++
++#include "q3c/native_event.h"
++#include "q3c/stabilization_filter.h"
++
++bool
++q3c_print_capabilities(void) {
++    struct q3c_stabilization_filter filter;
++    char error[512];
++    bool available = q3c_stabilization_filter_open(
++        &filter, 2064, 1160, AV_PIX_FMT_YUV420P, (AVRational) {1, 60},
++        false, error, sizeof(error));
++
++    char gpu[512] = "null";
++    if (available) {
++        char escaped[384];
++        if (!q3c_json_escape(escaped, sizeof(escaped), filter.gpu_name)) {
++            q3c_stabilization_filter_close(&filter);
++            return false;
++        }
++        snprintf(gpu, sizeof(gpu), "\"%s\"", escaped);
++    }
++
++    printf("{\"schemaVersion\":1,\"upstreamVersion\":\"4.1\","
++           "\"forkVersion\":\"quest3caster-stabilization-1\","
++           "\"profiles\":[\"obsLowLatency1080p60\","
++           "\"obsStabilized1080p60\"],"
++           "\"stabilizationModes\":[\"off\",\"openclFeaturePoint\"],"
++           "\"openclAvailable\":%s,\"gpu\":%s,"
++           "\"output\":{\"width\":1920,\"height\":1080},"
++           "\"delays\":{\"lowLatencyNominalMs\":0,"
++           "\"stabilizedNominalMs\":100,\"stabilizedMaximumMs\":120},"
++           "\"calibratedSource\":{\"width\":4128,\"height\":2208},"
++           "\"diagnostic\":\"%s\"}\n",
++           available ? "true" : "false", gpu,
++           available ? "ready" : "OpenCL stabilization unavailable");
++    if (available) {
++        q3c_stabilization_filter_close(&filter);
++    }
++    return true;
++}
+diff --git a/app/src/q3c/capabilities.h b/app/src/q3c/capabilities.h
+new file mode 100644
+index 0000000..ffc86fb
+--- /dev/null
++++ b/app/src/q3c/capabilities.h
+@@ -0,0 +1,9 @@
++#ifndef Q3C_CAPABILITIES_H
++#define Q3C_CAPABILITIES_H
++
++#include <stdbool.h>
++
++bool
++q3c_print_capabilities(void);
++
++#endif
+diff --git a/app/src/q3c/native_event.c b/app/src/q3c/native_event.c
+new file mode 100644
+index 0000000..7b25745
+--- /dev/null
++++ b/app/src/q3c/native_event.c
+@@ -0,0 +1,157 @@
++#include "q3c/native_event.h"
++
++#include <stdio.h>
++#include <string.h>
++
++static unsigned
++q3c_utf8_sequence_length(const unsigned char *source) {
++    unsigned char first = source[0];
++    if (first < 0x80) {
++        return 1;
++    }
++    if (first >= 0xC2 && first <= 0xDF && source[1]
++            && (source[1] & 0xC0) == 0x80) {
++        return 2;
++    }
++    if (first >= 0xE0 && first <= 0xEF && source[1] && source[2]
++            && (source[1] & 0xC0) == 0x80
++            && (source[2] & 0xC0) == 0x80
++            && !(first == 0xE0 && source[1] < 0xA0)
++            && !(first == 0xED && source[1] >= 0xA0)) {
++        return 3;
++    }
++    if (first >= 0xF0 && first <= 0xF4 && source[1] && source[2] && source[3]
++            && (source[1] & 0xC0) == 0x80
++            && (source[2] & 0xC0) == 0x80
++            && (source[3] & 0xC0) == 0x80
++            && !(first == 0xF0 && source[1] < 0x90)
++            && !(first == 0xF4 && source[1] >= 0x90)) {
++        return 4;
++    }
++    return 0;
++}
++
++bool
++q3c_utf8_sanitize(const char *source, char *destination, size_t capacity) {
++    if (!source || !destination || capacity < 2) {
++        return false;
++    }
++    size_t read_index = 0;
++    size_t write_index = 0;
++    while (source[read_index]) {
++        const unsigned char *current =
++            (const unsigned char *) &source[read_index];
++        unsigned length = q3c_utf8_sequence_length(current);
++        if (!length) {
++            length = 1;
++            if (write_index + 1 >= capacity) {
++                return false;
++            }
++            destination[write_index++] = '?';
++        } else {
++            if (write_index + length >= capacity) {
++                return false;
++            }
++            if (length == 1 && current[0] < 0x20) {
++                destination[write_index++] = ' ';
++            } else {
++                memcpy(&destination[write_index], current, length);
++                write_index += length;
++            }
++        }
++        read_index += length;
++    }
++    destination[write_index] = '\0';
++    return write_index > 0;
++}
++
++bool
++q3c_json_escape(char *destination, size_t capacity, const char *source) {
++    if (!destination || !capacity || !source) {
++        return false;
++    }
++    size_t used = 0;
++    for (const unsigned char *p = (const unsigned char *) source; *p; ++p) {
++        char encoded[7];
++        size_t count;
++        switch (*p) {
++            case '"': strcpy(encoded, "\\\""); count = 2; break;
++            case '\\': strcpy(encoded, "\\\\"); count = 2; break;
++            case '\b': strcpy(encoded, "\\b"); count = 2; break;
++            case '\f': strcpy(encoded, "\\f"); count = 2; break;
++            case '\n': strcpy(encoded, "\\n"); count = 2; break;
++            case '\r': strcpy(encoded, "\\r"); count = 2; break;
++            case '\t': strcpy(encoded, "\\t"); count = 2; break;
++            default:
++                if (*p < 0x20) {
++                    snprintf(encoded, sizeof(encoded), "\\u%04x", *p);
++                    count = 6;
++                } else {
++                    encoded[0] = (char) *p;
++                    count = 1;
++                }
++        }
++        if (used + count >= capacity) {
++            destination[0] = '\0';
++            return false;
++        }
++        memcpy(destination + used, encoded, count);
++        used += count;
++    }
++    destination[used] = '\0';
++    return true;
++}
++
++bool
++q3c_event_ready(char *destination, size_t capacity, const char *profile,
++                uint32_t width, uint32_t height, bool stabilized,
++                const char *gpu_name, uint16_t delay_ms,
++                uint64_t generation) {
++    char escaped_profile[80];
++    char escaped_gpu[512];
++    if (!q3c_json_escape(escaped_profile, sizeof(escaped_profile), profile)
++            || (gpu_name && !q3c_json_escape(escaped_gpu, sizeof(escaped_gpu),
++                                             gpu_name))) {
++        return false;
++    }
++    int written = snprintf(destination, capacity,
++        Q3C_EVENT_PREFIX
++        "{\"schemaVersion\":1,\"type\":\"ready\",\"code\":\"stream_ready\","
++        "\"effectiveProfile\":\"%s\",\"output\":{\"width\":%u,"
++        "\"height\":%u},\"stabilization\":{\"active\":%s},\"gpu\":%s%s%s,"
++        "\"nominalDelayMs\":%u,\"generation\":%llu}",
++        escaped_profile, width, height, stabilized ? "true" : "false",
++        gpu_name ? "\"" : "null", gpu_name ? escaped_gpu : "",
++        gpu_name ? "\"" : "", delay_ms, (unsigned long long) generation);
++    return written > 0 && (size_t) written < capacity
++        && written <= Q3C_EVENT_MAX_BYTES;
++}
++
++bool
++q3c_event_diagnostic(char *destination, size_t capacity, bool fatal,
++                     const char *code, const char *message) {
++    char escaped_code[96];
++    char escaped_message[2048];
++    if (!q3c_json_escape(escaped_code, sizeof(escaped_code), code)
++            || !q3c_json_escape(escaped_message, sizeof(escaped_message),
++                                message)) {
++        return false;
++    }
++    int written = snprintf(destination, capacity,
++        Q3C_EVENT_PREFIX
++        "{\"schemaVersion\":1,\"type\":\"%s\",\"code\":\"%s\","
++        "\"message\":\"%s\"}",
++        fatal ? "fatal" : "warning", escaped_code, escaped_message);
++    return written > 0 && (size_t) written < capacity
++        && written <= Q3C_EVENT_MAX_BYTES;
++}
++
++void
++q3c_event_emit(const char *event) {
++    if (event && strlen(event) <= Q3C_EVENT_MAX_BYTES
++            && !strchr(event, '\n') && !strchr(event, '\r')) {
++        fputs(event, stdout);
++        fputc('\n', stdout);
++        fflush(stdout);
++    }
++}
+diff --git a/app/src/q3c/native_event.h b/app/src/q3c/native_event.h
+new file mode 100644
+index 0000000..21def0d
+--- /dev/null
++++ b/app/src/q3c/native_event.h
+@@ -0,0 +1,30 @@
++#ifndef Q3C_NATIVE_EVENT_H
++#define Q3C_NATIVE_EVENT_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define Q3C_EVENT_MAX_BYTES 4096
++#define Q3C_EVENT_PREFIX "Q3C_NATIVE_EVENT "
++
++bool
++q3c_json_escape(char *destination, size_t capacity, const char *source);
++
++bool
++q3c_event_ready(char *destination, size_t capacity, const char *profile,
++                uint32_t width, uint32_t height, bool stabilized,
++                const char *gpu_name, uint16_t delay_ms,
++                uint64_t generation);
++
++bool
++q3c_event_diagnostic(char *destination, size_t capacity, bool fatal,
++                     const char *code, const char *message);
++
++void
++q3c_event_emit(const char *event);
++
++bool
++q3c_utf8_sanitize(const char *source, char *destination, size_t capacity);
++
++#endif
+diff --git a/app/src/q3c/profile.c b/app/src/q3c/profile.c
+new file mode 100644
+index 0000000..7de8e36
+--- /dev/null
++++ b/app/src/q3c/profile.c
+@@ -0,0 +1,99 @@
++#include "q3c/profile.h"
++
++#include <errno.h>
++#include <stdlib.h>
++#include <string.h>
++
++static const struct q3c_profile profiles[] = {
++    {
++        .id = Q3C_PROFILE_OBS_LOW_LATENCY_1080P60,
++        .name = "obsLowLatency1080p60",
++        .server_crop = "1792:1008:2200:600",
++        .presentation_angle = "-22",
++        .input_width = 1792,
++        .input_height = 1008,
++        .output_width = 1792,
++        .output_height = 1008,
++        .window_width = 1920,
++        .window_height = 1080,
++        .video_bit_rate = 40000000,
++        .max_fps = 60,
++        .audio_delay_ms = 0,
++        .nominal_video_delay_ms = 0,
++        .maximum_video_delay_ms = 0,
++        .stabilized = false,
++    },
++    {
++        .id = Q3C_PROFILE_OBS_STABILIZED_1080P60,
++        .name = "obsStabilized1080p60",
++        .server_crop = "2064:1160:2064:524",
++        .presentation_angle = "-22",
++        .input_width = 2064,
++        .input_height = 1160,
++        .output_width = 1920,
++        .output_height = 1080,
++        .window_width = 1920,
++        .window_height = 1080,
++        .video_bit_rate = 40000000,
++        .max_fps = 60,
++        .audio_delay_ms = 100,
++        .nominal_video_delay_ms = 100,
++        .maximum_video_delay_ms = 120,
++        .stabilized = true,
++    },
++};
++
++bool
++q3c_profile_parse(const char *value, enum q3c_profile_id *id) {
++    if (!value || !id) {
++        return false;
++    }
++
++    for (size_t i = 0; i < sizeof(profiles) / sizeof(profiles[0]); ++i) {
++        if (!strcmp(value, profiles[i].name)) {
++            *id = profiles[i].id;
++            return true;
++        }
++    }
++    return false;
++}
++
++const struct q3c_profile *
++q3c_profile_get(enum q3c_profile_id id) {
++    for (size_t i = 0; i < sizeof(profiles) / sizeof(profiles[0]); ++i) {
++        if (profiles[i].id == id) {
++            return &profiles[i];
++        }
++    }
++    return NULL;
++}
++
++bool
++q3c_generation_parse(const char *value, uint64_t *generation) {
++    if (!value || !*value || !generation || value[0] == '+'
++            || value[0] == '-' || value[0] == '0') {
++        return false;
++    }
++
++    errno = 0;
++    char *end;
++    unsigned long long parsed = strtoull(value, &end, 10);
++    if (errno == ERANGE || !parsed || *end) {
++        return false;
++    }
++
++    *generation = (uint64_t) parsed;
++    return true;
++}
++
++bool
++q3c_profile_validate_geometry(const struct q3c_profile *profile,
++                              uint32_t width, uint32_t height,
++                              bool output) {
++    if (!profile) {
++        return false;
++    }
++    return output
++        ? width == profile->output_width && height == profile->output_height
++        : width == profile->input_width && height == profile->input_height;
++}
+diff --git a/app/src/q3c/profile.h b/app/src/q3c/profile.h
+new file mode 100644
+index 0000000..ca6d0d3
+--- /dev/null
++++ b/app/src/q3c/profile.h
+@@ -0,0 +1,47 @@
++#ifndef Q3C_PROFILE_H
++#define Q3C_PROFILE_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++enum q3c_profile_id {
++    Q3C_PROFILE_NONE,
++    Q3C_PROFILE_OBS_LOW_LATENCY_1080P60,
++    Q3C_PROFILE_OBS_STABILIZED_1080P60,
++};
++
++struct q3c_profile {
++    enum q3c_profile_id id;
++    const char *name;
++    const char *server_crop;
++    const char *presentation_angle;
++    uint32_t input_width;
++    uint32_t input_height;
++    uint32_t output_width;
++    uint32_t output_height;
++    uint32_t window_width;
++    uint32_t window_height;
++    uint32_t video_bit_rate;
++    uint16_t max_fps;
++    uint16_t audio_delay_ms;
++    uint16_t nominal_video_delay_ms;
++    uint16_t maximum_video_delay_ms;
++    bool stabilized;
++};
++
++bool
++q3c_profile_parse(const char *value, enum q3c_profile_id *id);
++
++const struct q3c_profile *
++q3c_profile_get(enum q3c_profile_id id);
++
++bool
++q3c_generation_parse(const char *value, uint64_t *generation);
++
++bool
++q3c_profile_validate_geometry(const struct q3c_profile *profile,
++                              uint32_t width, uint32_t height,
++                              bool output);
++
++#endif
+diff --git a/app/src/q3c/render_ack.c b/app/src/q3c/render_ack.c
+new file mode 100644
+index 0000000..2bc06e7
+--- /dev/null
++++ b/app/src/q3c/render_ack.c
+@@ -0,0 +1,69 @@
++#include "q3c/render_ack.h"
++
++#include <string.h>
++
++#include "q3c/native_event.h"
++
++bool
++q3c_render_ack_dispatch(
++        bool render_succeeded, q3c_rendered_callback callback, void *userdata,
++        const AVFrame *frame, const struct sc_stream_session *session) {
++    if (!render_succeeded || !callback || !frame || !session) {
++        return false;
++    }
++    callback(userdata, frame, session);
++    return true;
++}
++
++bool
++q3c_direct_ready_init(struct q3c_direct_ready *ready,
++                      const struct q3c_profile *profile, uint64_t generation,
++                      q3c_render_event_emitter event_emitter) {
++    if (!ready || !profile || profile->stabilized || !generation) {
++        return false;
++    }
++    memset(ready, 0, sizeof(*ready));
++    if (!sc_mutex_init(&ready->mutex)) {
++        return false;
++    }
++    ready->profile = profile;
++    ready->generation = generation;
++    ready->event_emitter = event_emitter ? event_emitter : q3c_event_emit;
++    return true;
++}
++
++void
++q3c_direct_ready_destroy(struct q3c_direct_ready *ready) {
++    sc_mutex_destroy(&ready->mutex);
++}
++
++void
++q3c_direct_ready_ack_rendered(
++        void *userdata, const AVFrame *frame,
++        const struct sc_stream_session *session) {
++    struct q3c_direct_ready *ready = userdata;
++    if (!ready || !frame || !session || frame->pts == AV_NOPTS_VALUE
++            || frame->format != AV_PIX_FMT_YUV420P
++            || !q3c_profile_validate_geometry(ready->profile, (uint32_t) frame->width, (uint32_t) frame->height, true)
++            || !q3c_profile_validate_geometry(ready->profile, (uint32_t) session->video.width, (uint32_t) session->video.height, true)) {
++        return;
++    }
++
++    sc_mutex_lock(&ready->mutex);
++    if (!ready->ready_emitted) {
++        char event[Q3C_EVENT_MAX_BYTES + 1];
++        if (q3c_event_ready(event, sizeof(event), ready->profile->name,
++                            ready->profile->output_width,
++                            ready->profile->output_height, false,
++                            NULL, 0, ready->generation)) {
++            ready->event_emitter(event);
++            ready->ready_emitted = true;
++        } else if (q3c_event_diagnostic(
++                       event, sizeof(event), true,
++                       "native_protocol_error",
++                       "Could not encode native readiness event.")) {
++            ready->event_emitter(event);
++        }
++    }
++    sc_mutex_unlock(&ready->mutex);
++}
+diff --git a/app/src/q3c/render_ack.h b/app/src/q3c/render_ack.h
+new file mode 100644
+index 0000000..7667675
+--- /dev/null
++++ b/app/src/q3c/render_ack.h
+@@ -0,0 +1,44 @@
++#ifndef Q3C_RENDER_ACK_H
++#define Q3C_RENDER_ACK_H
++
++#include <stdbool.h>
++
++#include <libavutil/frame.h>
++
++#include "trait/packet_sink.h"
++#include "q3c/profile.h"
++#include "util/thread.h"
++
++typedef void (*q3c_rendered_callback)(
++    void *userdata, const AVFrame *frame,
++    const struct sc_stream_session *session);
++
++typedef void (*q3c_render_event_emitter)(const char *event);
++
++struct q3c_direct_ready {
++    const struct q3c_profile *profile;
++    q3c_render_event_emitter event_emitter;
++    struct sc_mutex mutex;
++    uint64_t generation;
++    bool ready_emitted;
++};
++
++bool
++q3c_direct_ready_init(struct q3c_direct_ready *ready,
++                      const struct q3c_profile *profile, uint64_t generation,
++                      q3c_render_event_emitter event_emitter);
++
++void
++q3c_direct_ready_destroy(struct q3c_direct_ready *ready);
++
++void
++q3c_direct_ready_ack_rendered(
++    void *userdata, const AVFrame *frame,
++    const struct sc_stream_session *session);
++
++bool
++q3c_render_ack_dispatch(
++    bool render_succeeded, q3c_rendered_callback callback, void *userdata,
++    const AVFrame *frame, const struct sc_stream_session *session);
++
++#endif
+diff --git a/app/src/q3c/render_path.c b/app/src/q3c/render_path.c
+new file mode 100644
+index 0000000..8fc8d77
+--- /dev/null
++++ b/app/src/q3c/render_path.c
+@@ -0,0 +1,63 @@
++#include "q3c/render_path.h"
++
++#include "util/log.h"
++#include "util/sdl.h"
++
++static bool
++q3c_default_clear(SDL_Renderer *renderer) {
++    return sc_sdl_render_clear(renderer);
++}
++
++static bool
++q3c_default_texture(SDL_Renderer *renderer, SDL_Texture *texture,
++                    const SDL_FRect *destination) {
++    bool ok = SDL_RenderTexture(renderer, texture, NULL, destination);
++    if (!ok) {
++        LOGE("Could not render texture: %s", SDL_GetError());
++    }
++    return ok;
++}
++
++static bool
++q3c_default_texture_rotated(SDL_Renderer *renderer, SDL_Texture *texture,
++                            const SDL_FRect *destination, double angle,
++                            SDL_FlipMode flip) {
++    bool ok = SDL_RenderTextureRotated(renderer, texture, NULL, destination,
++                                       angle, NULL, flip);
++    if (!ok) {
++        LOGE("Could not render rotated texture: %s", SDL_GetError());
++    }
++    return ok;
++}
++
++static bool
++q3c_default_present(SDL_Renderer *renderer) {
++    return sc_sdl_render_present(renderer);
++}
++
++const struct q3c_render_ops q3c_default_render_ops = {
++    .clear = q3c_default_clear,
++    .texture = q3c_default_texture,
++    .texture_rotated = q3c_default_texture_rotated,
++    .present = q3c_default_present,
++};
++
++bool
++q3c_render_path_execute(const struct q3c_render_ops *ops,
++                        SDL_Renderer *renderer, SDL_Texture *texture,
++                        const SDL_FRect *destination, bool rotated,
++                        double angle, SDL_FlipMode flip) {
++    if (!ops || !ops->clear || !ops->texture || !ops->texture_rotated
++            || !ops->present || !renderer || (texture && !destination)) {
++        return false;
++    }
++    bool clear_ok = ops->clear(renderer);
++    bool texture_ok = true;
++    if (texture) {
++        texture_ok = rotated
++            ? ops->texture_rotated(renderer, texture, destination, angle, flip)
++            : ops->texture(renderer, texture, destination);
++    }
++    bool present_ok = ops->present(renderer);
++    return clear_ok && texture_ok && present_ok;
++}
+diff --git a/app/src/q3c/render_path.h b/app/src/q3c/render_path.h
+new file mode 100644
+index 0000000..34b254c
+--- /dev/null
++++ b/app/src/q3c/render_path.h
+@@ -0,0 +1,26 @@
++#ifndef Q3C_RENDER_PATH_H
++#define Q3C_RENDER_PATH_H
++
++#include <stdbool.h>
++
++#include <SDL3/SDL.h>
++
++struct q3c_render_ops {
++    bool (*clear)(SDL_Renderer *renderer);
++    bool (*texture)(SDL_Renderer *renderer, SDL_Texture *texture,
++                    const SDL_FRect *destination);
++    bool (*texture_rotated)(SDL_Renderer *renderer, SDL_Texture *texture,
++                            const SDL_FRect *destination, double angle,
++                            SDL_FlipMode flip);
++    bool (*present)(SDL_Renderer *renderer);
++};
++
++extern const struct q3c_render_ops q3c_default_render_ops;
++
++bool
++q3c_render_path_execute(const struct q3c_render_ops *ops,
++                        SDL_Renderer *renderer, SDL_Texture *texture,
++                        const SDL_FRect *destination, bool rotated,
++                        double angle, SDL_FlipMode flip);
++
++#endif
+diff --git a/app/src/q3c/stabilization_filter.c b/app/src/q3c/stabilization_filter.c
+new file mode 100644
+index 0000000..398eb72
+--- /dev/null
++++ b/app/src/q3c/stabilization_filter.c
+@@ -0,0 +1,657 @@
++#include "q3c/stabilization_filter.h"
++
++#include <CL/cl.h>
++#include <errno.h>
++#include <math.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#ifdef _WIN32
++# include <windows.h>
++#endif
++
++#include <libavfilter/buffersink.h>
++#include <libavfilter/buffersrc.h>
++#include <libavutil/dict.h>
++#include <libavutil/error.h>
++#include <libavutil/hwcontext.h>
++#include <libavutil/hwcontext_opencl.h>
++#include <libavutil/mathematics.h>
++
++#include "q3c/native_event.h"
++
++#define Q3C_INPUT_WIDTH 2064
++#define Q3C_INPUT_HEIGHT 1160
++#define Q3C_OUTPUT_WIDTH 1920
++#define Q3C_OUTPUT_HEIGHT 1080
++#define Q3C_FINAL_CROP_X ((Q3C_INPUT_WIDTH - Q3C_OUTPUT_WIDTH) / 2)
++#define Q3C_FINAL_CROP_Y ((Q3C_INPUT_HEIGHT - Q3C_OUTPUT_HEIGHT) / 2)
++
++AVRational
++q3c_stabilization_time_base(void) {
++    return (AVRational) {1, 1000000};
++}
++
++enum q3c_delay_action
++q3c_delay_action_for_age(int64_t age_us) {
++    if (age_us < 0) {
++        return Q3C_DELAY_INVALID;
++    }
++    if (age_us < Q3C_NOMINAL_DELAY_US) {
++        return Q3C_DELAY_WAIT;
++    }
++    if (age_us <= Q3C_MAXIMUM_DELAY_US) {
++        return Q3C_DELAY_DELIVER;
++    }
++    return Q3C_DELAY_DROP_STALE;
++}
++
++bool
++q3c_transform_covers_final_crop(const double transform[6], uint32_t width,
++                                uint32_t height) {
++    if (!transform || width != Q3C_INPUT_WIDTH || height != Q3C_INPUT_HEIGHT) {
++        return false;
++    }
++    const double corners[4][2] = {
++        {Q3C_FINAL_CROP_X, Q3C_FINAL_CROP_Y},
++        {Q3C_FINAL_CROP_X + Q3C_OUTPUT_WIDTH - 1, Q3C_FINAL_CROP_Y},
++        {Q3C_FINAL_CROP_X, Q3C_FINAL_CROP_Y + Q3C_OUTPUT_HEIGHT - 1},
++        {Q3C_FINAL_CROP_X + Q3C_OUTPUT_WIDTH - 1,
++         Q3C_FINAL_CROP_Y + Q3C_OUTPUT_HEIGHT - 1},
++    };
++    for (unsigned i = 0; i < 4; ++i) {
++        double x = corners[i][0] * transform[0]
++                 + corners[i][1] * transform[1] + transform[2];
++        double y = corners[i][0] * transform[3]
++                 + corners[i][1] * transform[4] + transform[5];
++        if (!isfinite(x) || !isfinite(y) || x < 0 || y < 0
++                || x > width - 1 || y > height - 1) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool
++q3c_parse_transform_metadata(const AVFrame *frame, double transform[6]) {
++    const AVDictionaryEntry *entry = av_dict_get(
++        frame->metadata, "lavfi.q3c.transform_y", NULL, 0);
++    if (!entry || !entry->value) {
++        return false;
++    }
++    const char *cursor = entry->value;
++    for (unsigned i = 0; i < 6; ++i) {
++        errno = 0;
++        char *end;
++        transform[i] = strtod(cursor, &end);
++        if (errno == ERANGE || end == cursor || !isfinite(transform[i])) {
++            return false;
++        }
++        if (i < 5) {
++            if (*end != ',') {
++                return false;
++            }
++            cursor = end + 1;
++        } else if (*end != '\0') {
++            return false;
++        }
++    }
++    return true;
++}
++
++bool
++q3c_stabilization_frame_covers_final_crop(const AVFrame *frame) {
++    double transform[6];
++    return frame && q3c_parse_transform_metadata(frame, transform)
++        && q3c_transform_covers_final_crop(
++            transform, Q3C_INPUT_WIDTH, Q3C_INPUT_HEIGHT);
++}
++
++bool
++q3c_select_first_gpu(const uint64_t *device_types, size_t device_count,
++                     uint64_t gpu_type_mask, size_t *selected_index) {
++    if (!device_types || !gpu_type_mask || !selected_index) {
++        return false;
++    }
++    for (size_t i = 0; i < device_count; ++i) {
++        if (device_types[i] & gpu_type_mask) {
++            *selected_index = i;
++            return true;
++        }
++    }
++    return false;
++}
++
++static bool
++q3c_select_opencl_gpu(char *selector, size_t selector_capacity) {
++    if (!selector || selector_capacity < 4) {
++        return false;
++    }
++#ifdef _WIN32
++    HMODULE module = LoadLibraryW(L"OpenCL.dll");
++    if (!module) {
++        return false;
++    }
++    typedef cl_int (CL_API_CALL *q3c_cl_get_platform_ids_fn)(
++        cl_uint, cl_platform_id *, cl_uint *);
++    typedef cl_int (CL_API_CALL *q3c_cl_get_device_ids_fn)(
++        cl_platform_id, cl_device_type, cl_uint, cl_device_id *, cl_uint *);
++    typedef cl_int (CL_API_CALL *q3c_cl_get_device_info_fn)(
++        cl_device_id, cl_device_info, size_t, void *, size_t *);
++    q3c_cl_get_platform_ids_fn get_platform_ids =
++        (q3c_cl_get_platform_ids_fn) (void *)
++        GetProcAddress(module, "clGetPlatformIDs");
++    q3c_cl_get_device_ids_fn get_device_ids =
++        (q3c_cl_get_device_ids_fn) (void *)
++        GetProcAddress(module, "clGetDeviceIDs");
++    q3c_cl_get_device_info_fn get_device_info =
++        (q3c_cl_get_device_info_fn) (void *)
++        GetProcAddress(module, "clGetDeviceInfo");
++    if (!get_platform_ids || !get_device_ids || !get_device_info) {
++        FreeLibrary(module);
++        return false;
++    }
++#else
++# define get_platform_ids clGetPlatformIDs
++# define get_device_ids clGetDeviceIDs
++# define get_device_info clGetDeviceInfo
++#endif
++
++    cl_uint platform_count = 0;
++    cl_int result = get_platform_ids(0, NULL, &platform_count);
++    cl_platform_id *platforms = NULL;
++    bool selected = false;
++    if (result != CL_SUCCESS || !platform_count) {
++        goto end;
++    }
++    platforms = calloc(platform_count, sizeof(*platforms));
++    if (!platforms
++            || get_platform_ids(platform_count, platforms, NULL)
++                    != CL_SUCCESS) {
++        goto end;
++    }
++
++    for (cl_uint p = 0; p < platform_count && !selected; ++p) {
++        cl_uint device_count = 0;
++        result = get_device_ids(platforms[p], CL_DEVICE_TYPE_ALL, 0, NULL,
++                                &device_count);
++        if (result == CL_DEVICE_NOT_FOUND || !device_count) {
++            continue;
++        }
++        if (result != CL_SUCCESS) {
++            continue;
++        }
++        cl_device_id *devices = calloc(device_count, sizeof(*devices));
++        uint64_t *types = calloc(device_count, sizeof(*types));
++        if (!devices || !types) {
++            free(devices);
++            free(types);
++            goto end;
++        }
++        result = get_device_ids(platforms[p], CL_DEVICE_TYPE_ALL,
++                                device_count, devices, NULL);
++        if (result == CL_SUCCESS) {
++            for (cl_uint d = 0; d < device_count; ++d) {
++                cl_device_type type = 0;
++                if (get_device_info(devices[d], CL_DEVICE_TYPE, sizeof(type),
++                                    &type, NULL) == CL_SUCCESS) {
++                    types[d] = (uint64_t) type;
++                }
++            }
++            size_t device_index;
++            if (q3c_select_first_gpu(types, device_count,
++                                     (uint64_t) CL_DEVICE_TYPE_GPU,
++                                     &device_index)) {
++                int written = snprintf(selector, selector_capacity, "%u.%zu",
++                                       p, device_index);
++                selected = written > 0
++                        && (size_t) written < selector_capacity;
++            }
++        }
++        free(devices);
++        free(types);
++    }
++
++end:
++    free(platforms);
++#ifdef _WIN32
++    FreeLibrary(module);
++#else
++# undef get_platform_ids
++# undef get_device_ids
++# undef get_device_info
++#endif
++    return selected;
++}
++
++static void
++q3c_set_error(char *destination, size_t capacity, const char *operation,
++              int result) {
++    if (!destination || !capacity) {
++        return;
++    }
++    char detail[AV_ERROR_MAX_STRING_SIZE];
++    av_strerror(result, detail, sizeof(detail));
++    snprintf(destination, capacity, "%s: %s", operation, detail);
++}
++
++static bool
++q3c_query_gpu(AVBufferRef *device_ref, char *destination, size_t capacity) {
++    AVHWDeviceContext *device_context = (AVHWDeviceContext *) device_ref->data;
++    AVOpenCLDeviceContext *opencl =
++        (AVOpenCLDeviceContext *) device_context->hwctx;
++    if (!opencl || !opencl->device_id) {
++        return false;
++    }
++    size_t length = 0;
++    cl_device_type device_type = 0;
++    char raw_name[512];
++#ifdef _WIN32
++    HMODULE module = LoadLibraryW(L"OpenCL.dll");
++    if (!module) {
++        return false;
++    }
++    typedef cl_int (CL_API_CALL *q3c_cl_get_device_info_fn)(
++        cl_device_id, cl_device_info, size_t, void *, size_t *);
++    q3c_cl_get_device_info_fn get_device_info =
++        (q3c_cl_get_device_info_fn) (void *)
++        GetProcAddress(module, "clGetDeviceInfo");
++    if (!get_device_info) {
++        FreeLibrary(module);
++        return false;
++    }
++    cl_int result = get_device_info(opencl->device_id, CL_DEVICE_TYPE,
++                                    sizeof(device_type), &device_type, NULL);
++    if (result == CL_SUCCESS && (device_type & CL_DEVICE_TYPE_GPU)) {
++        result = get_device_info(opencl->device_id, CL_DEVICE_NAME,
++                                 sizeof(raw_name), raw_name, &length);
++    }
++    FreeLibrary(module);
++#else
++    cl_int result = clGetDeviceInfo(opencl->device_id, CL_DEVICE_TYPE,
++                                    sizeof(device_type), &device_type, NULL);
++    if (result == CL_SUCCESS && (device_type & CL_DEVICE_TYPE_GPU)) {
++        result = clGetDeviceInfo(opencl->device_id, CL_DEVICE_NAME,
++                                 sizeof(raw_name), raw_name, &length);
++    }
++#endif
++    if (result != CL_SUCCESS || !(device_type & CL_DEVICE_TYPE_GPU)
++            || length <= 1 || length > sizeof(raw_name)) {
++        return false;
++    }
++    raw_name[sizeof(raw_name) - 1] = '\0';
++    return q3c_utf8_sanitize(raw_name, destination, capacity);
++}
++
++static AVFilterContext *
++q3c_create_filter(struct q3c_stabilization_filter *filter,
++                  const char *filter_name, const char *instance_name,
++                  const char *arguments, char *error, size_t error_capacity) {
++    const AVFilter *definition = avfilter_get_by_name(filter_name);
++    if (!definition) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity, "required filter unavailable: %s",
++                     filter_name);
++        }
++        return NULL;
++    }
++    AVFilterContext *context =
++        avfilter_graph_alloc_filter(filter->graph, definition, instance_name);
++    if (!context) {
++        q3c_set_error(error, error_capacity, "filter allocation",
++                      AVERROR(ENOMEM));
++        return NULL;
++    }
++    context->hw_device_ctx = av_buffer_ref(filter->device);
++    if (!context->hw_device_ctx) {
++        q3c_set_error(error, error_capacity, "OpenCL context reference",
++                      AVERROR(ENOMEM));
++        return NULL;
++    }
++    int result = avfilter_init_str(context, arguments);
++    if (result < 0) {
++        q3c_set_error(error, error_capacity, instance_name, result);
++        return NULL;
++    }
++    return context;
++}
++
++bool
++q3c_stabilization_filter_open(struct q3c_stabilization_filter *filter,
++                              uint32_t width, uint32_t height,
++                              enum AVPixelFormat format, AVRational time_base,
++                              bool force_failure, char *error,
++                              size_t error_capacity) {
++    if (!filter || width != Q3C_INPUT_WIDTH || height != Q3C_INPUT_HEIGHT
++            || format != AV_PIX_FMT_YUV420P || time_base.num <= 0
++            || time_base.den <= 0) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity, "unexpected input geometry/format");
++        }
++        return false;
++    }
++    memset(filter, 0, sizeof(*filter));
++    filter->last_input_pts = AV_NOPTS_VALUE;
++    filter->last_filter_output_pts = AV_NOPTS_VALUE;
++    filter->last_delivered_pts = AV_NOPTS_VALUE;
++    filter->time_base = time_base;
++    filter->input_format = format;
++    if (force_failure) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity, "forced OpenCL initialization failure");
++        }
++        return false;
++    }
++
++    char device_selector[32];
++    if (!q3c_select_opencl_gpu(device_selector, sizeof(device_selector))) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity,
++                     "No deterministic OpenCL GPU selection is available");
++        }
++        goto fail;
++    }
++    AVDictionary *device_options = NULL;
++    int result = av_dict_set(&device_options, "device_type", "gpu", 0);
++    if (result >= 0) {
++        result = av_hwdevice_ctx_create(&filter->device,
++                                        AV_HWDEVICE_TYPE_OPENCL,
++                                        device_selector, device_options, 0);
++    }
++    av_dict_free(&device_options);
++    if (result < 0) {
++        q3c_set_error(error, error_capacity, "OpenCL device initialization",
++                      result);
++        goto fail;
++    }
++    if (!q3c_query_gpu(filter->device, filter->gpu_name,
++                       sizeof(filter->gpu_name))) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity,
++                     "OpenCL device is not a usable GPU or its name is invalid");
++        }
++        goto fail;
++    }
++
++    filter->graph = avfilter_graph_alloc();
++    filter->output = av_frame_alloc();
++    filter->delivered = av_frame_alloc();
++    if (!filter->graph || !filter->output || !filter->delivered) {
++        q3c_set_error(error, error_capacity, "filter allocation",
++                      AVERROR(ENOMEM));
++        goto fail;
++    }
++
++    char source_args[256];
++    snprintf(source_args, sizeof(source_args),
++             "video_size=%ux%u:pix_fmt=%d:time_base=%d/%d:"
++             "pixel_aspect=1/1:frame_rate=60/1",
++             width, height, format, time_base.num, time_base.den);
++    result = avfilter_graph_create_filter(
++        &filter->source, avfilter_get_by_name("buffer"), "q3c_input",
++        source_args, NULL, filter->graph);
++    if (result < 0) {
++        q3c_set_error(error, error_capacity, "buffer source initialization",
++                      result);
++        goto fail;
++    }
++    result = avfilter_graph_create_filter(
++        &filter->sink, avfilter_get_by_name("buffersink"), "q3c_output",
++        NULL, NULL, filter->graph);
++    if (result < 0) {
++        q3c_set_error(error, error_capacity, "buffer sink initialization",
++                      result);
++        goto fail;
++    }
++
++    AVFilterContext *format_in = q3c_create_filter(
++        filter, "format", "q3c_format_in", "pix_fmts=yuv420p",
++        error, error_capacity);
++    AVFilterContext *upload = q3c_create_filter(
++        filter, "hwupload", "q3c_hwupload", NULL, error, error_capacity);
++    AVFilterContext *deshake = q3c_create_filter(
++        filter, "deshake_opencl", "q3c_deshake",
++        "smooth_strength=0.0:refine_features=1:"
++        "smooth_window_multiplier=0.1:adaptive_crop=0",
++        error, error_capacity);
++    AVFilterContext *download = q3c_create_filter(
++        filter, "hwdownload", "q3c_hwdownload", NULL, error, error_capacity);
++    AVFilterContext *format_out = q3c_create_filter(
++        filter, "format", "q3c_format_out", "pix_fmts=yuv420p",
++        error, error_capacity);
++    /* crop=1920:1080:(iw-1920)/2:(ih-1080)/2 */
++    AVFilterContext *crop = q3c_create_filter(
++        filter, "crop", "q3c_crop",
++        "w=1920:h=1080:x=(iw-1920)/2:y=(ih-1080)/2",
++        error, error_capacity);
++    if (!format_in || !upload || !deshake || !download || !format_out
++            || !crop) {
++        goto fail;
++    }
++
++    AVFilterContext *chain[] = {
++        filter->source, format_in, upload, deshake, download, format_out,
++        crop, filter->sink,
++    };
++    for (size_t i = 0; i + 1 < sizeof(chain) / sizeof(chain[0]); ++i) {
++        result = avfilter_link(chain[i], 0, chain[i + 1], 0);
++        if (result < 0) {
++            q3c_set_error(error, error_capacity, "stabilization graph link",
++                          result);
++            goto fail;
++        }
++    }
++
++    result = avfilter_graph_config(filter->graph, NULL);
++    if (result < 0) {
++        q3c_set_error(error, error_capacity, "stabilization graph configure",
++                      result);
++        goto fail;
++    }
++    return true;
++
++fail:
++    q3c_stabilization_filter_close(filter);
++    return false;
++}
++
++void
++q3c_stabilization_filter_close(struct q3c_stabilization_filter *filter) {
++    if (!filter) {
++        return;
++    }
++    av_frame_free(&filter->output);
++    av_frame_free(&filter->delivered);
++    for (unsigned i = 0; i < Q3C_MAX_QUEUED_FRAMES; ++i) {
++        av_frame_free(&filter->delay_queue[i]);
++    }
++    avfilter_graph_free(&filter->graph);
++    av_buffer_unref(&filter->device);
++    filter->source = NULL;
++    filter->sink = NULL;
++    filter->queued_frames = 0;
++    filter->delay_head = 0;
++    filter->delay_count = 0;
++    filter->peak_queue_depth = 0;
++    filter->gpu_name[0] = '\0';
++    filter->last_input_pts = AV_NOPTS_VALUE;
++    filter->last_filter_output_pts = AV_NOPTS_VALUE;
++    filter->last_delivered_pts = AV_NOPTS_VALUE;
++    filter->last_submission_to_output_ms = 0;
++}
++
++bool
++q3c_stabilization_filter_reset(struct q3c_stabilization_filter *filter,
++                               uint32_t width, uint32_t height,
++                               enum AVPixelFormat format,
++                               AVRational time_base, bool force_failure,
++                               char *error, size_t error_capacity) {
++    q3c_stabilization_filter_close(filter);
++    return q3c_stabilization_filter_open(filter, width, height, format,
++                                         time_base, force_failure, error,
++                                         error_capacity);
++}
++
++bool
++q3c_stabilization_filter_push(struct q3c_stabilization_filter *filter,
++                              const AVFrame *input, AVFrame **output,
++                              bool *has_output, char *error,
++                              size_t error_capacity) {
++    if (!filter || !filter->graph || !input || !output || !has_output) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity, "filter is not initialized");
++        }
++        return false;
++    }
++    if (input->width != Q3C_INPUT_WIDTH || input->height != Q3C_INPUT_HEIGHT) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity, "unexpected input geometry");
++        }
++        return false;
++    }
++    if (input->format != filter->input_format
++            || input->format != AV_PIX_FMT_YUV420P) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity, "unexpected input pixel format");
++        }
++        return false;
++    }
++    if (input->pts == AV_NOPTS_VALUE
++            || (filter->last_input_pts != AV_NOPTS_VALUE
++                && input->pts <= filter->last_input_pts)) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity,
++                     "input timestamp is missing or non-monotonic");
++        }
++        return false;
++    }
++    filter->last_input_pts = input->pts;
++
++    int result = av_buffersrc_add_frame_flags(
++        filter->source, (AVFrame *) input, AV_BUFFERSRC_FLAG_KEEP_REF);
++    if (result < 0) {
++        q3c_set_error(error, error_capacity, "stabilization frame submit",
++                      result);
++        return false;
++    }
++    ++filter->queued_frames;
++    if (filter->queued_frames > filter->peak_queue_depth) {
++        filter->peak_queue_depth = filter->queued_frames;
++    }
++
++    av_frame_unref(filter->output);
++    result = av_buffersink_get_frame(filter->sink, filter->output);
++    if (result == AVERROR(EAGAIN)) {
++        *has_output = false;
++        *output = NULL;
++        return true;
++    }
++    if (result < 0) {
++        q3c_set_error(error, error_capacity, "stabilization frame receive",
++                      result);
++        return false;
++    }
++    if (filter->queued_frames) {
++        --filter->queued_frames;
++    }
++    if (filter->output->width != Q3C_OUTPUT_WIDTH
++            || filter->output->height != Q3C_OUTPUT_HEIGHT) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity, "unexpected output geometry");
++        }
++        return false;
++    }
++    if (filter->output->format != AV_PIX_FMT_YUV420P
++            || filter->output->pts == AV_NOPTS_VALUE
++            || (filter->last_filter_output_pts != AV_NOPTS_VALUE
++                && filter->output->pts <= filter->last_filter_output_pts)) {
++        if (error && error_capacity) {
++            snprintf(error, error_capacity,
++                     "output format or timestamp is invalid/non-monotonic");
++        }
++        return false;
++    }
++    filter->last_filter_output_pts = filter->output->pts;
++
++    if (filter->delay_count == Q3C_MAX_QUEUED_FRAMES) {
++        AVFrame *oldest = filter->delay_queue[filter->delay_head];
++        int64_t oldest_age_us = av_rescale_q(
++            input->pts - oldest->pts, filter->time_base, AV_TIME_BASE_Q);
++        if (q3c_delay_action_for_age(oldest_age_us)
++                != Q3C_DELAY_DROP_STALE) {
++            if (error && error_capacity) {
++                snprintf(error, error_capacity, "video delay queue is full");
++            }
++            return false;
++        }
++        av_frame_free(&filter->delay_queue[filter->delay_head]);
++        filter->delay_head =
++            (filter->delay_head + 1) % Q3C_MAX_QUEUED_FRAMES;
++        --filter->delay_count;
++    }
++
++    unsigned tail = (filter->delay_head + filter->delay_count)
++                  % Q3C_MAX_QUEUED_FRAMES;
++    filter->delay_queue[tail] = av_frame_clone(filter->output);
++    if (!filter->delay_queue[tail]) {
++        q3c_set_error(error, error_capacity, "video delay frame clone",
++                      AVERROR(ENOMEM));
++        return false;
++    }
++    ++filter->delay_count;
++    unsigned total_depth = filter->queued_frames + filter->delay_count;
++    if (total_depth > filter->peak_queue_depth) {
++        filter->peak_queue_depth = total_depth;
++    }
++
++    while (filter->delay_count) {
++        AVFrame *oldest = filter->delay_queue[filter->delay_head];
++        int64_t age_us = av_rescale_q(input->pts - oldest->pts,
++                                      filter->time_base, AV_TIME_BASE_Q);
++        enum q3c_delay_action action = q3c_delay_action_for_age(age_us);
++        if (action == Q3C_DELAY_WAIT) {
++            *has_output = false;
++            *output = NULL;
++            return true;
++        }
++        if (action == Q3C_DELAY_INVALID) {
++            if (error && error_capacity) {
++                snprintf(error, error_capacity,
++                         "video delay timestamp is invalid");
++            }
++            return false;
++        }
++        if (action == Q3C_DELAY_DROP_STALE) {
++            av_frame_free(&filter->delay_queue[filter->delay_head]);
++            filter->delay_head =
++                (filter->delay_head + 1) % Q3C_MAX_QUEUED_FRAMES;
++            --filter->delay_count;
++            continue;
++        }
++
++        if (oldest->pts == AV_NOPTS_VALUE
++                || (filter->last_delivered_pts != AV_NOPTS_VALUE
++                    && oldest->pts <= filter->last_delivered_pts)) {
++            if (error && error_capacity) {
++                snprintf(error, error_capacity,
++                         "delivered timestamp is missing or non-monotonic");
++            }
++            return false;
++        }
++        av_frame_unref(filter->delivered);
++        av_frame_move_ref(filter->delivered, oldest);
++        av_frame_free(&filter->delay_queue[filter->delay_head]);
++        filter->delay_head =
++            (filter->delay_head + 1) % Q3C_MAX_QUEUED_FRAMES;
++        --filter->delay_count;
++        filter->last_delivered_pts = filter->delivered->pts;
++        filter->last_submission_to_output_ms = (unsigned) (age_us / 1000);
++        *has_output = true;
++        *output = filter->delivered;
++        return true;
++    }
++
++    *has_output = false;
++    *output = NULL;
++    return true;
++}
+diff --git a/app/src/q3c/stabilization_filter.h b/app/src/q3c/stabilization_filter.h
+new file mode 100644
+index 0000000..70790c5
+--- /dev/null
++++ b/app/src/q3c/stabilization_filter.h
+@@ -0,0 +1,85 @@
++#ifndef Q3C_STABILIZATION_FILTER_H
++#define Q3C_STABILIZATION_FILTER_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#include <libavfilter/avfilter.h>
++#include <libavutil/frame.h>
++#include <libavutil/pixfmt.h>
++#include <libavutil/rational.h>
++
++#define Q3C_NOMINAL_DELAY_US 100000
++#define Q3C_MAXIMUM_DELAY_US 120000
++#define Q3C_MAX_QUEUED_FRAMES 12
++
++enum q3c_delay_action {
++    Q3C_DELAY_WAIT,
++    Q3C_DELAY_DELIVER,
++    Q3C_DELAY_DROP_STALE,
++    Q3C_DELAY_INVALID,
++};
++
++struct q3c_stabilization_filter {
++    AVFilterGraph *graph;
++    AVFilterContext *source;
++    AVFilterContext *sink;
++    AVBufferRef *device;
++    AVFrame *output;
++    AVFrame *delivered;
++    AVFrame *delay_queue[Q3C_MAX_QUEUED_FRAMES];
++    unsigned delay_head;
++    unsigned delay_count;
++    AVRational time_base;
++    enum AVPixelFormat input_format;
++    int64_t last_input_pts;
++    int64_t last_filter_output_pts;
++    int64_t last_delivered_pts;
++    unsigned last_submission_to_output_ms;
++    char gpu_name[256];
++    unsigned queued_frames;
++    unsigned peak_queue_depth;
++};
++
++enum q3c_delay_action
++q3c_delay_action_for_age(int64_t age_us);
++
++AVRational
++q3c_stabilization_time_base(void);
++
++bool
++q3c_stabilization_filter_reset(struct q3c_stabilization_filter *filter,
++                               uint32_t width, uint32_t height,
++                               enum AVPixelFormat format,
++                               AVRational time_base, bool force_failure,
++                               char *error, size_t error_capacity);
++
++bool
++q3c_stabilization_filter_open(struct q3c_stabilization_filter *filter,
++                              uint32_t width, uint32_t height,
++                              enum AVPixelFormat format, AVRational time_base,
++                              bool force_failure, char *error,
++                              size_t error_capacity);
++
++void
++q3c_stabilization_filter_close(struct q3c_stabilization_filter *filter);
++
++bool
++q3c_stabilization_filter_push(struct q3c_stabilization_filter *filter,
++                              const AVFrame *input, AVFrame **output,
++                              bool *has_output, char *error,
++                              size_t error_capacity);
++
++bool
++q3c_select_first_gpu(const uint64_t *device_types, size_t device_count,
++                     uint64_t gpu_type_mask, size_t *selected_index);
++
++bool
++q3c_transform_covers_final_crop(const double transform[6], uint32_t width,
++                                uint32_t height);
++
++bool
++q3c_stabilization_frame_covers_final_crop(const AVFrame *frame);
++
++#endif
+diff --git a/app/src/q3c/stabilization_sink.c b/app/src/q3c/stabilization_sink.c
+new file mode 100644
+index 0000000..6a86681
+--- /dev/null
++++ b/app/src/q3c/stabilization_sink.c
+@@ -0,0 +1,384 @@
++#include "q3c/stabilization_sink.h"
++
++#include <stdio.h>
++#include <string.h>
++
++#ifdef Q3C_NATIVE_TESTS
++#include <SDL3/SDL_mutex.h>
++#endif
++
++#include "q3c/native_event.h"
++
++#define DOWNCAST(SINK) \
++    container_of(SINK, struct q3c_stabilization_sink, frame_sink)
++
++static void
++q3c_emit_fatal(struct q3c_stabilization_sink *sink, const char *code,
++               const char *message) {
++    char event[Q3C_EVENT_MAX_BYTES + 1];
++    if (q3c_event_diagnostic(event, sizeof(event), true, code, message)) {
++        sink->event_emitter(event);
++    }
++}
++
++static struct sc_stream_session
++q3c_corrected_session(const struct sc_stream_session *session,
++                      uint64_t epoch) {
++    struct sc_stream_session corrected = *session;
++    corrected.video.width = 1920;
++    corrected.video.height = 1080;
++    corrected.q3c_epoch = epoch;
++    return corrected;
++}
++
++static bool
++q3c_validate_forwarded_frame(struct q3c_stabilization_sink *sink,
++                             const AVFrame *frame) {
++    if (frame->width != (int) sink->profile->output_width
++            || frame->height != (int) sink->profile->output_height
++            || frame->format != AV_PIX_FMT_YUV420P) {
++        q3c_emit_fatal(sink, "unexpected_output_geometry",
++                       "Effective output must be 1920x1080 YUV420P.");
++        return false;
++    }
++    if (frame->pts == AV_NOPTS_VALUE
++            || (sink->last_forwarded_pts != AV_NOPTS_VALUE
++                && frame->pts <= sink->last_forwarded_pts)) {
++        q3c_emit_fatal(sink, "invalid_video_timestamp",
++                       "Effective output timestamp is missing or "
++                       "non-monotonic.");
++        return false;
++    }
++    sink->last_forwarded_pts = frame->pts;
++    return true;
++}
++
++static bool
++q3c_stabilization_sink_open_impl(
++        struct q3c_stabilization_sink *sink, const AVCodecContext *context,
++        const struct sc_stream_session *session) {
++    if (!q3c_profile_validate_geometry(sink->profile, context->width,
++                                       context->height, false)
++            || context->pix_fmt != AV_PIX_FMT_YUV420P) {
++        q3c_emit_fatal(sink, "unexpected_input_geometry",
++                       "Decoded input geometry/format does not match the "
++                       "locked OBS profile; both crops require a 4128x2208 "
++                       "Quest 3 source.");
++        return false;
++    }
++
++    sink->input_width = context->width;
++    sink->input_height = context->height;
++    sink->input_format = context->pix_fmt;
++    sink->input_time_base = q3c_stabilization_time_base();
++    sink->session_epoch = 1;
++    sink->last_forwarded_pts = AV_NOPTS_VALUE;
++
++    if (sink->profile->stabilized) {
++        char error[512];
++        if (!q3c_stabilization_filter_open(
++                &sink->filter, context->width, context->height,
++                context->pix_fmt, sink->input_time_base, false, error,
++                sizeof(error))) {
++            q3c_emit_fatal(sink, "stabilization_unavailable", error);
++            return false;
++        }
++        snprintf(sink->gpu_name, sizeof(sink->gpu_name), "%s",
++                 sink->filter.gpu_name);
++    }
++
++    sink->output_context = avcodec_alloc_context3(NULL);
++    if (!sink->output_context) {
++        q3c_stabilization_filter_close(&sink->filter);
++        q3c_emit_fatal(sink, "stabilization_unavailable",
++                       "Could not allocate effective output context.");
++        return false;
++    }
++    sink->output_context->codec_type = AVMEDIA_TYPE_VIDEO;
++    sink->output_context->pix_fmt = AV_PIX_FMT_YUV420P;
++    sink->output_context->width = sink->profile->output_width;
++    sink->output_context->height = sink->profile->output_height;
++    sink->output_context->time_base = sink->input_time_base;
++    struct sc_stream_session corrected =
++        q3c_corrected_session(session, sink->session_epoch);
++    if (!sc_frame_source_sinks_open(&sink->frame_source,
++                                    sink->output_context, &corrected)) {
++        avcodec_free_context(&sink->output_context);
++        q3c_stabilization_filter_close(&sink->filter);
++        return false;
++    }
++    sink->open = true;
++    return true;
++}
++
++static bool
++q3c_stabilization_frame_sink_open(struct sc_frame_sink *frame_sink,
++                                  const AVCodecContext *context,
++                                  const struct sc_stream_session *session) {
++    return q3c_stabilization_sink_open_impl(DOWNCAST(frame_sink), context,
++                                            session);
++}
++
++static void
++q3c_stabilization_frame_sink_close(struct sc_frame_sink *frame_sink) {
++    struct q3c_stabilization_sink *sink = DOWNCAST(frame_sink);
++#ifdef Q3C_NATIVE_TESTS
++    if (sink->close_observer) {
++        bool try_lock_acquired = SDL_TryLockMutex(sink->mutex.mutex);
++        if (try_lock_acquired) {
++            SDL_UnlockMutex(sink->mutex.mutex);
++        }
++        sink->close_observer(sink->close_observer_userdata,
++            try_lock_acquired ? Q3C_CLOSE_TRY_MUTEX_ACQUIRED
++                              : Q3C_CLOSE_TRY_MUTEX_BUSY);
++    }
++#endif
++    sc_mutex_lock(&sink->mutex);
++#ifdef Q3C_NATIVE_TESTS
++    if (sink->close_observer) {
++        sink->close_observer(sink->close_observer_userdata,
++                             Q3C_CLOSE_AFTER_MUTEX);
++    }
++#endif
++    sink->ready_emitted = false;
++    sink->pending_ready = false;
++    sink->pending_ready_acknowledged = false;
++    sink->pending_ready_push_in_progress = false;
++    sink->open = false;
++    sc_mutex_unlock(&sink->mutex);
++    sc_frame_source_sinks_close(&sink->frame_source);
++    avcodec_free_context(&sink->output_context);
++    q3c_stabilization_filter_close(&sink->filter);
++    sink->last_forwarded_pts = AV_NOPTS_VALUE;
++    sink->gpu_name[0] = '\0';
++}
++
++static bool
++q3c_publish_ready_locked(struct q3c_stabilization_sink *sink) {
++    char event[Q3C_EVENT_MAX_BYTES + 1];
++    if (!q3c_event_ready(event, sizeof(event), sink->profile->name,
++                         sink->profile->output_width,
++                         sink->profile->output_height,
++                         sink->profile->stabilized,
++                         sink->profile->stabilized ? sink->gpu_name : NULL,
++                         sink->profile->nominal_video_delay_ms,
++                         sink->generation)) {
++        return false;
++    }
++    sink->event_emitter(event);
++    sink->ready_emitted = true;
++    sink->pending_ready = false;
++    sink->pending_ready_acknowledged = false;
++    return true;
++}
++
++static void
++q3c_rollback_pending_ready(struct q3c_stabilization_sink *sink,
++                           uint64_t epoch, int64_t pts) {
++    sc_mutex_lock(&sink->mutex);
++    if (!sink->ready_emitted && sink->pending_ready
++            && sink->pending_ready_epoch == epoch
++            && sink->pending_ready_pts == pts) {
++        sink->pending_ready = false;
++        sink->pending_ready_acknowledged = false;
++        sink->pending_ready_push_in_progress = false;
++    }
++    sc_mutex_unlock(&sink->mutex);
++}
++
++static bool
++q3c_forward_effective_frame(struct q3c_stabilization_sink *sink,
++                            const AVFrame *frame) {
++    if (!q3c_validate_forwarded_frame(sink, frame)) {
++        return false;
++    }
++
++    uint64_t epoch;
++    sc_mutex_lock(&sink->mutex);
++    if (!sink->open) {
++        sc_mutex_unlock(&sink->mutex);
++        return false;
++    }
++    epoch = sink->session_epoch;
++    sink->pending_ready_pts = frame->pts;
++    sink->pending_ready_epoch = epoch;
++    sink->pending_ready = true;
++    sink->pending_ready_acknowledged = false;
++    sink->pending_ready_push_in_progress = true;
++    sc_mutex_unlock(&sink->mutex);
++
++    bool pushed = sc_frame_source_sinks_push(&sink->frame_source, frame);
++    if (!pushed) {
++        q3c_rollback_pending_ready(sink, epoch, frame->pts);
++        return false;
++    }
++
++    bool publication_ok = true;
++    sc_mutex_lock(&sink->mutex);
++    if (sink->pending_ready && sink->pending_ready_epoch == epoch
++            && sink->pending_ready_pts == frame->pts) {
++        sink->pending_ready_push_in_progress = false;
++        if (sink->open && sink->pending_ready_acknowledged
++                && !sink->ready_emitted) {
++            publication_ok = q3c_publish_ready_locked(sink);
++        }
++    }
++    sc_mutex_unlock(&sink->mutex);
++    return publication_ok;
++}
++
++static bool
++q3c_forward_stabilized_output(struct q3c_stabilization_sink *sink,
++                              const AVFrame *frame) {
++    if (!q3c_stabilization_frame_covers_final_crop(frame)) {
++        q3c_emit_fatal(sink, "stabilization_unavailable",
++                       "Stabilization transform exposes the calibrated "
++                       "overscan border.");
++        return false;
++    }
++    return q3c_forward_effective_frame(sink, frame);
++}
++
++static bool
++q3c_stabilization_frame_sink_push(struct sc_frame_sink *frame_sink,
++                                  const AVFrame *frame) {
++    struct q3c_stabilization_sink *sink = DOWNCAST(frame_sink);
++    if (!sink->open) {
++        q3c_emit_fatal(sink, "stabilization_unavailable",
++                       "Frame arrived while the profile sink was closed.");
++        return false;
++    }
++    if (!sink->profile->stabilized) {
++        return q3c_forward_effective_frame(sink, frame);
++    }
++
++    AVFrame *output;
++    bool has_output;
++    char error[512];
++    if (!q3c_stabilization_filter_push(&sink->filter, frame, &output,
++                                       &has_output, error, sizeof(error))) {
++        const char *code = strstr(error, "geometry")
++                         ? "unexpected_output_geometry"
++                         : strstr(error, "timestamp")
++                         ? "invalid_video_timestamp"
++                         : "stabilization_unavailable";
++        q3c_emit_fatal(sink, code, error);
++        return false;
++    }
++    if (!has_output) {
++        return true;
++    }
++    return q3c_forward_stabilized_output(sink, output);
++}
++
++static bool
++q3c_stabilization_frame_sink_push_session(
++        struct sc_frame_sink *frame_sink,
++        const struct sc_stream_session *session) {
++    struct q3c_stabilization_sink *sink = DOWNCAST(frame_sink);
++    sc_mutex_lock(&sink->mutex);
++    ++sink->session_epoch;
++    sink->ready_emitted = false;
++    sink->pending_ready = false;
++    sink->pending_ready_acknowledged = false;
++    sink->pending_ready_push_in_progress = false;
++    sc_mutex_unlock(&sink->mutex);
++    sink->last_forwarded_pts = AV_NOPTS_VALUE;
++
++    if (sink->profile->stabilized) {
++        char error[512];
++        if (!q3c_stabilization_filter_reset(
++                &sink->filter, sink->input_width, sink->input_height,
++                sink->input_format, sink->input_time_base, false, error,
++                sizeof(error))) {
++            q3c_emit_fatal(sink, "stabilization_unavailable", error);
++            return false;
++        }
++        snprintf(sink->gpu_name, sizeof(sink->gpu_name), "%s",
++                 sink->filter.gpu_name);
++    }
++    struct sc_stream_session corrected =
++        q3c_corrected_session(session, sink->session_epoch);
++    return sc_frame_source_sinks_push_session(&sink->frame_source, &corrected);
++}
++
++void
++q3c_stabilization_sink_ack_rendered(
++        void *userdata, const AVFrame *frame,
++        const struct sc_stream_session *session) {
++    struct q3c_stabilization_sink *sink = userdata;
++    if (!sink || !frame || !session || frame->width != 1920
++            || frame->height != 1080 || frame->format != AV_PIX_FMT_YUV420P
++            || frame->pts == AV_NOPTS_VALUE || session->video.width != 1920
++            || session->video.height != 1080) {
++        return;
++    }
++
++    sc_mutex_lock(&sink->mutex);
++    if (sink->open && !sink->ready_emitted && sink->pending_ready
++            && session->q3c_epoch == sink->pending_ready_epoch
++            && frame->pts == sink->pending_ready_pts) {
++        sink->pending_ready_acknowledged = true;
++        if (!sink->pending_ready_push_in_progress
++                && !q3c_publish_ready_locked(sink)) {
++            char event[Q3C_EVENT_MAX_BYTES + 1];
++            if (q3c_event_diagnostic(
++                    event, sizeof(event), true,
++                    "stabilization_unavailable",
++                    "Could not encode native readiness event.")) {
++                sink->event_emitter(event);
++            }
++        }
++    }
++    sc_mutex_unlock(&sink->mutex);
++}
++
++bool
++q3c_stabilization_sink_init(struct q3c_stabilization_sink *sink,
++                            const struct q3c_profile *profile,
++                            uint64_t generation,
++                            q3c_native_event_emitter event_emitter) {
++    if (!sink || !profile || !profile->stabilized || !generation) {
++        return false;
++    }
++    memset(sink, 0, sizeof(*sink));
++    if (!sc_mutex_init(&sink->mutex)) {
++        return false;
++    }
++    sink->profile = profile;
++    sink->generation = generation;
++    sink->event_emitter = event_emitter ? event_emitter : q3c_event_emit;
++    sink->last_forwarded_pts = AV_NOPTS_VALUE;
++    sc_frame_source_init(&sink->frame_source);
++    static const struct sc_frame_sink_ops operations = {
++        .open = q3c_stabilization_frame_sink_open,
++        .close = q3c_stabilization_frame_sink_close,
++        .push = q3c_stabilization_frame_sink_push,
++        .push_session = q3c_stabilization_frame_sink_push_session,
++    };
++    sink->frame_sink.ops = &operations;
++    return true;
++}
++
++void
++q3c_stabilization_sink_destroy(struct q3c_stabilization_sink *sink) {
++    if (sink->open) {
++        q3c_stabilization_frame_sink_close(&sink->frame_sink);
++    }
++    sc_mutex_destroy(&sink->mutex);
++}
++
++#ifdef Q3C_NATIVE_TESTS
++bool
++q3c_stabilization_sink_open_for_test(
++        struct q3c_stabilization_sink *sink, const AVCodecContext *context,
++        const struct sc_stream_session *session) {
++    return q3c_stabilization_sink_open_impl(sink, context, session);
++}
++
++bool
++q3c_stabilization_sink_forward_output_for_test(
++        struct q3c_stabilization_sink *sink, const AVFrame *frame) {
++    return q3c_forward_stabilized_output(sink, frame);
++}
++#endif
+diff --git a/app/src/q3c/stabilization_sink.h b/app/src/q3c/stabilization_sink.h
+new file mode 100644
+index 0000000..ad3f2c9
+--- /dev/null
++++ b/app/src/q3c/stabilization_sink.h
+@@ -0,0 +1,80 @@
++#ifndef Q3C_STABILIZATION_SINK_H
++#define Q3C_STABILIZATION_SINK_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "q3c/profile.h"
++#include "q3c/stabilization_filter.h"
++#include "trait/frame_sink.h"
++#include "trait/frame_source.h"
++#include "util/thread.h"
++
++typedef void (*q3c_native_event_emitter)(const char *event);
++
++#ifdef Q3C_NATIVE_TESTS
++enum q3c_close_observation {
++    Q3C_CLOSE_TRY_MUTEX_BUSY,
++    Q3C_CLOSE_TRY_MUTEX_ACQUIRED,
++    Q3C_CLOSE_AFTER_MUTEX,
++};
++
++typedef void (*q3c_close_observer)(
++    void *userdata, enum q3c_close_observation observation);
++#endif
++
++struct q3c_stabilization_sink {
++    struct sc_frame_sink frame_sink;
++    struct sc_frame_source frame_source;
++    struct q3c_stabilization_filter filter;
++    AVCodecContext *output_context;
++    const struct q3c_profile *profile;
++    q3c_native_event_emitter event_emitter;
++    struct sc_mutex mutex;
++    uint64_t generation;
++    uint64_t session_epoch;
++    int input_width;
++    int input_height;
++    enum AVPixelFormat input_format;
++    AVRational input_time_base;
++    int64_t last_forwarded_pts;
++    int64_t pending_ready_pts;
++    uint64_t pending_ready_epoch;
++    char gpu_name[256];
++    bool ready_emitted;
++    bool pending_ready;
++    bool pending_ready_acknowledged;
++    bool pending_ready_push_in_progress;
++    bool open;
++#ifdef Q3C_NATIVE_TESTS
++    q3c_close_observer close_observer;
++    void *close_observer_userdata;
++#endif
++};
++
++bool
++q3c_stabilization_sink_init(struct q3c_stabilization_sink *sink,
++                            const struct q3c_profile *profile,
++                            uint64_t generation,
++                            q3c_native_event_emitter event_emitter);
++
++void
++q3c_stabilization_sink_destroy(struct q3c_stabilization_sink *sink);
++
++void
++q3c_stabilization_sink_ack_rendered(
++    void *userdata, const AVFrame *frame,
++    const struct sc_stream_session *session);
++
++#ifdef Q3C_NATIVE_TESTS
++bool
++q3c_stabilization_sink_open_for_test(
++    struct q3c_stabilization_sink *sink, const AVCodecContext *context,
++    const struct sc_stream_session *session);
++
++bool
++q3c_stabilization_sink_forward_output_for_test(
++    struct q3c_stabilization_sink *sink, const AVFrame *frame);
++#endif
++
++#endif
+diff --git a/app/src/scrcpy.c b/app/src/scrcpy.c
+index f5b644a..07d2232 100644
+--- a/app/src/scrcpy.c
++++ b/app/src/scrcpy.c
+@@ -47,6 +47,8 @@
+ # include "v4l2_sink.h"
+ #endif
+ #include "video_regulator.h"
++#include "q3c/render_ack.h"
++#include "q3c/stabilization_sink.h"
+ 
+ struct scrcpy {
+     struct sc_server server;
+@@ -58,6 +60,8 @@ struct scrcpy {
+     struct sc_decoder audio_decoder;
+     struct sc_recorder recorder;
+     struct sc_video_regulator video_regulator;
++    struct q3c_stabilization_sink q3c_stabilization_sink;
++    struct q3c_direct_ready q3c_direct_ready;
+ #ifdef HAVE_V4L2
+     struct sc_v4l2_sink v4l2_sink;
+     struct sc_video_regulator v4l2_regulator;
+@@ -354,6 +358,8 @@ scrcpy(struct scrcpy_options *options) {
+     bool controller_initialized = false;
+     bool controller_started = false;
+     bool screen_initialized = false;
++    bool q3c_stabilization_sink_initialized = false;
++    bool q3c_direct_ready_initialized = false;
+     bool timeout_initialized = false;
+     bool timeout_started = false;
+     bool disconnected = false;
+@@ -755,10 +761,38 @@ aoa_complete:
+     assert(options->control == !!controller);
+ 
+     if (options->window) {
++        const struct q3c_profile *q3c_profile =
++            q3c_profile_get(options->q3c_profile_id);
++        if (q3c_profile && q3c_profile->stabilized) {
++            if (!q3c_stabilization_sink_init(&s->q3c_stabilization_sink,
++                                             q3c_profile,
++                                             options->q3c_generation, NULL)) {
++                LOGE("Could not initialize locked OBS profile sink");
++                goto end;
++            }
++            q3c_stabilization_sink_initialized = true;
++        } else if (q3c_profile) {
++            if (!q3c_direct_ready_init(&s->q3c_direct_ready, q3c_profile,
++                                       options->q3c_generation, NULL)) {
++                LOGE("Could not initialize locked OBS direct readiness");
++                goto end;
++            }
++            q3c_direct_ready_initialized = true;
++        }
+         struct sc_screen_params screen_params = {
+             .video = options->video_playback,
+             .camera = options->video_source == SC_VIDEO_SOURCE_CAMERA,
+             .flex_display = options->flex_display,
++            .frame_rendered_callback = q3c_profile
++                ? q3c_profile->stabilized
++                    ? q3c_stabilization_sink_ack_rendered
++                    : q3c_direct_ready_ack_rendered
++                : NULL,
++            .frame_rendered_userdata = q3c_profile
++                ? q3c_profile->stabilized
++                    ? (void *) &s->q3c_stabilization_sink
++                    : (void *) &s->q3c_direct_ready
++                : NULL,
+             .controller = controller,
+             .fp = fp,
+             .kp = kp,
+@@ -798,7 +832,15 @@ aoa_complete:
+                 src = &s->video_regulator.frame_source;
+             }
+ 
+-            sc_frame_source_add_sink(src, &s->screen.frame_sink);
++            if (q3c_profile && q3c_profile->stabilized) {
++                sc_frame_source_add_sink(
++                    src, &s->q3c_stabilization_sink.frame_sink);
++                sc_frame_source_add_sink(
++                    &s->q3c_stabilization_sink.frame_source,
++                    &s->screen.frame_sink);
++            } else {
++                sc_frame_source_add_sink(src, &s->screen.frame_sink);
++            }
+         }
+     }
+ 
+@@ -1006,6 +1048,12 @@ end:
+         sc_screen_join(&s->screen);
+         sc_screen_destroy(&s->screen);
+     }
++    if (q3c_stabilization_sink_initialized) {
++        q3c_stabilization_sink_destroy(&s->q3c_stabilization_sink);
++    }
++    if (q3c_direct_ready_initialized) {
++        q3c_direct_ready_destroy(&s->q3c_direct_ready);
++    }
+ 
+     if (controller_started) {
+         sc_controller_join(&s->controller);
+diff --git a/app/src/screen.c b/app/src/screen.c
+index 05923ab..be2c50e 100644
+--- a/app/src/screen.c
++++ b/app/src/screen.c
+@@ -235,7 +235,7 @@ sc_screen_update_content_rect(struct sc_screen *screen) {
+ //
+ // Set the update_content_rect flag if the window or content size may have
+ // changed, so that the content rectangle is recomputed
+-static void
++static bool
+ sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
+     assert(screen->window_shown);
+ 
+@@ -246,11 +246,10 @@ sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
+     SDL_Renderer *renderer = screen->renderer;
+     struct sc_screen_bg_color bg = screen->bg;
+     SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 0);
+-    sc_sdl_render_clear(renderer);
+-
+     SDL_Texture *texture = screen->tex.texture;
+     if (!texture) {
+-        goto end;
++        return q3c_render_path_execute(screen->render_ops, renderer, NULL,
++                                       NULL, false, 0, SDL_FLIP_NONE);
+     }
+ 
+     float scale = SDL_GetWindowPixelDensity(screen->window);
+@@ -269,44 +268,41 @@ sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
+     };
+     enum sc_orientation orientation = screen->orientation;
+ 
+-    bool ok = false;
++    bool rotated = orientation != SC_ORIENTATION_0;
++    double angle = 0;
++    SDL_FlipMode flip = SDL_FLIP_NONE;
++    SDL_FRect *destination = &geometry;
++    SDL_FRect rotated_rect;
+     if (orientation == SC_ORIENTATION_0) {
+         // always align to a physical pixel
+         geometry.x = (int32_t) geometry.x;
+         geometry.y = (int32_t) geometry.y;
+-        ok = SDL_RenderTexture(renderer, texture, NULL, &geometry);
+     } else {
+         unsigned cw_rotation = sc_orientation_get_rotation(orientation);
+-        double angle = 90 * cw_rotation;
++        angle = 90 * cw_rotation;
+ 
+         SDL_FRect *dstrect = NULL;
+-        SDL_FRect rect;
+         if (sc_orientation_is_swap(orientation)) {
+-            rect.x = geometry.x + (geometry.w - geometry.h) / 2.f;
+-            rect.y = geometry.y + (geometry.h - geometry.w) / 2.f;
+-            rect.w = geometry.h;
+-            rect.h = geometry.w;
+-            dstrect = &rect;
++            rotated_rect.x = geometry.x + (geometry.w - geometry.h) / 2.f;
++            rotated_rect.y = geometry.y + (geometry.h - geometry.w) / 2.f;
++            rotated_rect.w = geometry.h;
++            rotated_rect.h = geometry.w;
++            dstrect = &rotated_rect;
+         } else {
+             dstrect = &geometry;
+         }
+ 
+-        SDL_FlipMode flip = sc_orientation_is_mirror(orientation)
+-                              ? SDL_FLIP_HORIZONTAL : 0;
++        flip = sc_orientation_is_mirror(orientation)
++             ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
+ 
+         // always align to a physical pixel
+         dstrect->x = (int32_t) dstrect->x;
+         dstrect->y = (int32_t) dstrect->y;
+-        ok = SDL_RenderTextureRotated(renderer, texture, NULL, dstrect, angle,
+-                                      NULL, flip);
+-    }
+-
+-    if (!ok) {
+-        LOGE("Could not render texture: %s", SDL_GetError());
++        destination = dstrect;
+     }
+ 
+-end:
+-    sc_sdl_render_present(renderer);
++    return q3c_render_path_execute(screen->render_ops, renderer, texture,
++                                   destination, rotated, angle, flip);
+ }
+ 
+ static void
+@@ -451,6 +447,9 @@ sc_screen_frame_sink_push(struct sc_frame_sink *sink, const AVFrame *frame) {
+     sc_mutex_lock(&screen->mutex);
+     bool previous_skipped = sc_frame_buffer_has_frame(&screen->fb);
+     bool ok = sc_frame_buffer_push(&screen->fb, frame);
++    if (ok) {
++        screen->pending_frame_session = screen->current_session;
++    }
+     screen->prevent_auto_resize = screen->current_session.video.client_resized;
+     sc_mutex_unlock(&screen->mutex);
+     if (!ok) {
+@@ -476,7 +475,10 @@ static bool
+ sc_screen_frame_sink_push_session(struct sc_frame_sink *sink,
+                                   const struct sc_stream_session *session) {
+     struct sc_screen *screen = DOWNCAST(sink);
++    sc_mutex_lock(&screen->mutex);
++    sc_frame_buffer_discard(&screen->fb);
+     screen->current_session = *session;
++    sc_mutex_unlock(&screen->mutex);
+     return true;
+ }
+ 
+@@ -488,6 +490,9 @@ sc_screen_init(struct sc_screen *screen,
+     screen->resize_pending = false;
+     screen->window_shown = false;
+     screen->paused = false;
++    screen->frame_rendered_callback = params->frame_rendered_callback;
++    screen->frame_rendered_userdata = params->frame_rendered_userdata;
++    screen->render_ops = &q3c_default_render_ops;
+     screen->resume_frame = NULL;
+     screen->orientation = SC_ORIENTATION_0;
+     screen->disconnected = false;
+@@ -950,7 +955,12 @@ sc_screen_apply_frame(struct sc_screen *screen, bool can_resize) {
+         return false;
+     }
+ 
+-    sc_screen_render(screen, false);
++    if (!sc_screen_render(screen, false)) {
++        return false;
++    }
++    q3c_render_ack_dispatch(true, screen->frame_rendered_callback,
++                            screen->frame_rendered_userdata, frame,
++                            &screen->consumed_frame_session);
+     return true;
+ }
+ 
+@@ -969,14 +979,23 @@ sc_screen_update_frame(struct sc_screen *screen) {
+             av_frame_unref(screen->resume_frame);
+         }
+         sc_mutex_lock(&screen->mutex);
+-        sc_frame_buffer_consume(&screen->fb, screen->resume_frame);
++        if (!sc_frame_buffer_try_consume(&screen->fb, screen->resume_frame)) {
++            sc_mutex_unlock(&screen->mutex);
++            return true;
++        }
++        screen->resume_frame_session = screen->pending_frame_session;
+         sc_mutex_unlock(&screen->mutex);
+         return true;
+     }
+ 
+     av_frame_unref(screen->frame);
+     sc_mutex_lock(&screen->mutex);
++    if (!sc_frame_buffer_has_frame(&screen->fb)) {
++        sc_mutex_unlock(&screen->mutex);
++        return true;
++    }
+     sc_frame_buffer_consume(&screen->fb, screen->frame);
++    screen->consumed_frame_session = screen->pending_frame_session;
+     // read with lock held
+     bool can_resize = !screen->prevent_auto_resize;
+     sc_mutex_unlock(&screen->mutex);
+@@ -998,6 +1017,7 @@ sc_screen_set_paused(struct sc_screen *screen, bool paused) {
+         av_frame_free(&screen->frame);
+         screen->frame = screen->resume_frame;
+         screen->resume_frame = NULL;
++        screen->consumed_frame_session = screen->resume_frame_session;
+         bool ok = sc_screen_apply_frame(screen, true);
+         if (!ok) {
+             LOGE("Resume frame update failed");
+diff --git a/app/src/screen.h b/app/src/screen.h
+index a8058d9..22b6022 100644
+--- a/app/src/screen.h
++++ b/app/src/screen.h
+@@ -18,6 +18,8 @@
+ #include "input_manager.h"
+ #include "mouse_capture.h"
+ #include "options.h"
++#include "q3c/render_ack.h"
++#include "q3c/render_path.h"
+ #include "texture.h"
+ #include "trait/key_processor.h"
+ #include "trait/frame_sink.h"
+@@ -28,6 +30,8 @@
+ # define SC_DISPLAY_FORCE_OPENGL_CORE_PROFILE
+ #endif
+ 
++typedef q3c_rendered_callback sc_screen_frame_rendered_callback;
++
+ struct sc_screen {
+     struct sc_frame_sink frame_sink; // frame sink trait
+ 
+@@ -70,6 +74,7 @@ struct sc_screen {
+ 
+     SDL_Window *window;
+     SDL_Renderer *renderer;
++    const struct q3c_render_ops *render_ops;
+ #ifdef SC_DISPLAY_FORCE_OPENGL_CORE_PROFILE
+     SDL_GLContext gl_context;
+ #endif
+@@ -92,6 +97,12 @@ struct sc_screen {
+ 
+     // only accessed from the thread calling sc_frame_sink_ops functions
+     struct sc_stream_session current_session;
++    // Copied atomically with the frame-buffer operation under mutex.
++    struct sc_stream_session pending_frame_session;
++    struct sc_stream_session consumed_frame_session;
++    struct sc_stream_session resume_frame_session;
++    sc_screen_frame_rendered_callback frame_rendered_callback;
++    void *frame_rendered_userdata;
+ 
+     AVFrame *frame;
+ 
+@@ -113,6 +124,8 @@ struct sc_screen_params {
+     bool video;
+     bool camera;
+     bool flex_display;
++    sc_screen_frame_rendered_callback frame_rendered_callback;
++    void *frame_rendered_userdata;
+ 
+     struct sc_controller *controller;
+     struct sc_file_pusher *fp;
+diff --git a/app/src/trait/packet_sink.h b/app/src/trait/packet_sink.h
+index 6312d52..5b5e505 100644
+--- a/app/src/trait/packet_sink.h
++++ b/app/src/trait/packet_sink.h
+@@ -23,6 +23,7 @@ struct sc_stream_session_video {
+ 
+ struct sc_stream_session {
+     struct sc_stream_session_video video;
++    uint64_t q3c_epoch;
+ };
+ 
+ struct sc_packet_sink_ops {
+diff --git a/app/src/util/sdl.c b/app/src/util/sdl.c
+index 5bfcdad..59e469a 100644
+--- a/app/src/util/sdl.c
++++ b/app/src/util/sdl.c
+@@ -118,11 +118,11 @@ sc_sdl_render_clear(SDL_Renderer *renderer) {
+     return ok;
+ }
+ 
+-void
++bool
+ sc_sdl_render_present(SDL_Renderer *renderer) {
+     bool ok = SDL_RenderPresent(renderer);
+     if (!ok) {
+         LOGE("Could not render: %s", SDL_GetError());
+-        assert(!"unexpected");
+     }
++    return ok;
+ }
+diff --git a/app/src/util/sdl.h b/app/src/util/sdl.h
+index e1d49cc..edbc73d 100644
+--- a/app/src/util/sdl.h
++++ b/app/src/util/sdl.h
+@@ -34,7 +34,7 @@ sc_sdl_hide_window(SDL_Window *window);
+ bool
+ sc_sdl_render_clear(SDL_Renderer *renderer);
+ 
+-void
++bool
+ sc_sdl_render_present(SDL_Renderer *renderer);
+ 
+ #endif
+-- 
+2.45.1.windows.1

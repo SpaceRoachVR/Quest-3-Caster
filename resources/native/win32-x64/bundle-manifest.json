@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "target": "win32-x64",
+  "upstream": {
+    "name": "scrcpy",
+    "version": "4.1",
+    "tag": "v4.1",
+    "commit": "2926c06c5dc3064ae6d8db706f1a98a37cfcf3f0"
+  },
+  "ffmpeg": {
+    "version": "8.1.2",
+    "license": "LGPL-2.1-or-later",
+    "linkage": "shared",
+    "libavfilter": true,
+    "opencl": true,
+    "requiredFilter": "deshake_opencl"
+  },
+  "files": [
+    {
+      "path": "AdbWinApi.dll",
+      "sha256": "120bef587119c6cb926b86b9be90fdfbce38937588eae28cd91a94ce63c7b965",
+      "role": "native-tool"
+    },
+    {
+      "path": "AdbWinUsbApi.dll",
+      "sha256": "6ca69a2ca0e31309c087d288f058977d421ad03500e4c3e1dbd981241a069c60",
+      "role": "native-tool"
+    },
+    {
+      "path": "LICENSES/Android-Platform-Tools-NOTICE.txt",
+      "sha256": "628f43e9c88e2bf5aee9fc4c1cb672bf3931ba12dd5ef75c8170678395f3ca23",
+      "role": "license"
+    },
+    {
+      "path": "LICENSES/Apache-2.0.txt",
+      "sha256": "298cc0a4e9742965aff389307b1937a3c906442ea6477137123426e6e23a391d",
+      "role": "license"
+    },
+    {
+      "path": "LICENSES/LGPL-2.1.txt",
+      "sha256": "3804c6879f1ffe4146d61b61b28df3ebfa4a82bf296ecfb9b5be33ec38423e7f",
+      "role": "license"
+    },
+    {
+      "path": "LICENSES/SDL-Zlib.txt",
+      "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",
+      "role": "license"
+    },
+    {
+      "path": "LICENSES/Zlib.txt",
+      "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+      "role": "license"
+    },
+    {
+      "path": "LICENSES/dav1d-BSD-2-Clause.txt",
+      "sha256": "dd92c3c2247c5651606fc23a5e2d6a1ebc5ace9a3e49cbde0e12f05ad1cb1ee5",
+      "role": "license"
+    },
+    {
+      "path": "SDL3.dll",
+      "sha256": "3591fabfd2e5765af5b852d1e2f95be8967d02da638e159910d5801f93d742b5",
+      "role": "shared-library"
+    },
+    {
+      "path": "SOURCE_OFFER.md",
+      "sha256": "f249d7201c8694fa15c6a85e4c539f39222f235056b6196f63217ed15755940c",
+      "role": "source-offer"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "844f846ac2e1f09ebeaefeb60a917cb09ef4a23305a3f9f831237c3c31672149",
+      "role": "notice"
+    },
+    {
+      "path": "adb.exe",
+      "sha256": "957e46b8615f7af5b7292a2ddabe98d2e61940c3fb2b0545756507f080613e71",
+      "role": "native-tool"
+    },
+    {
+      "path": "avcodec-62.dll",
+      "sha256": "8aa4a85d8ef97b430054efa9f7141200ed7daa70e9e12c830e720ebeab9a06e6",
+      "role": "shared-library"
+    },
+    {
+      "path": "avfilter-11.dll",
+      "sha256": "2eb06d3b6c48e82effbed052dc11a30b8062d38182560dbab7f03ef2e34756f8",
+      "role": "shared-library"
+    },
+    {
+      "path": "avformat-62.dll",
+      "sha256": "10f5f233c16dc8d91a5819773de6f512e4ad84eea98a46fc2f51e5d7376a032d",
+      "role": "shared-library"
+    },
+    {
+      "path": "avutil-60.dll",
+      "sha256": "60e0cdff0b9ca288cbaa03ee26b120355b56c6f934961fc3136890e95a4cb5ff",
+      "role": "shared-library"
+    },
+    {
+      "path": "disconnected.png",
+      "sha256": "e394873cd3e2cc3ab0cca6212b10ed2a8a0fad11a05675c8a9fa6f26f3ae12c0",
+      "role": "asset"
+    },
+    {
+      "path": "ffmpeg-opencl-probe.exe",
+      "sha256": "6553b6ac2409ac31854167ec310aa9ee7616f5e1ef022f78c51ace4b17021f19",
+      "role": "opencl-filter-probe"
+    },
+    {
+      "path": "libusb-1.0.dll",
+      "sha256": "2039ae71fba477ae45c29eb652fd1d94eff46d2c6bbe7a565943544cee318fc1",
+      "role": "shared-library"
+    },
+    {
+      "path": "open_a_terminal_here.bat",
+      "sha256": "843758795a84d0d035a7d277ad29cc1ff1702048b4b61ae74b9e3439ae683423",
+      "role": "launcher"
+    },
+    {
+      "path": "q3c-native-tests.exe",
+      "sha256": "72a577824f8798e171e0726f25f9faa3386f490a3e4880e87ae9336bdeb26c74",
+      "role": "native-unit-tests"
+    },
+    {
+      "path": "q3c-stabilization-probe.exe",
+      "sha256": "a8f811f10c0d1e546c3adcfa2b93143c80a5c950197f44a3fb46cb82f540c13d",
+      "role": "stabilization-probe"
+    },
+    {
+      "path": "scrcpy-noconsole.vbs",
+      "sha256": "3ccda94c161f18cef07c50d4d3c4913eb883d4b0fe3b939c35fae52784fb1d2b",
+      "role": "launcher"
+    },
+    {
+      "path": "scrcpy-server",
+      "sha256": "deacb991ed2509715160ffdc7907e47b4160eb30d1566217e9047fd5b8850cae",
+      "role": "server"
+    },
+    {
+      "path": "scrcpy.exe",
+      "sha256": "c3bbaf7fbf464001eb9e4f63f8ac015447f72b5356838718ad1c8c858076fca8",
+      "role": "client"
+    },
+    {
+      "path": "scrcpy.png",
+      "sha256": "8e8ca237898faa16014cdd118396af53405b423f3db0508c50cc3edce08eb313",
+      "role": "asset"
+    },
+    {
+      "path": "swresample-6.dll",
+      "sha256": "55798f5a15d28fcc9ec8b9f207e662d29fac4e9d36a5a05c5d837cfac1afab45",
+      "role": "shared-library"
+    }
+  ]
+}

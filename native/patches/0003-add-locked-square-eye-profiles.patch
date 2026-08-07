@@ -1,0 +1,89 @@
+From 5f2b2dff63718e1db9327163a1d47247a5303b0e Mon Sep 17 00:00:00 2001
+From: Quest 3 Caster Build <build@quest3caster.invalid>
+Date: Sun, 26 Jul 2026 14:00:00 -0500
+Subject: [PATCH] feat: add locked square left and right eye profiles
+
+---
+ app/src/q3c/capabilities.c |  4 +++-
+ app/src/q3c/profile.c      | 36 ++++++++++++++++++++++++++++++++++++
+ app/src/q3c/profile.h      |  2 ++
+ 3 files changed, 41 insertions(+), 1 deletion(-)
+
+diff --git a/app/src/q3c/capabilities.c b/app/src/q3c/capabilities.c
+index 33ee51b..0cd3292 100644
+--- a/app/src/q3c/capabilities.c
++++ b/app/src/q3c/capabilities.c
+@@ -28,7 +28,9 @@ q3c_print_capabilities(void) {
+     printf("{\"schemaVersion\":1,\"upstreamVersion\":\"4.1\","
+            "\"forkVersion\":\"quest3caster-stabilization-1\","
+            "\"profiles\":[\"obsLowLatency1080p60\","
+-           "\"obsStabilized1080p60\"],"
++           "\"obsStabilized1080p60\","
++           "\"obsLowLatencySquareLeft1080p60\","
++           "\"obsLowLatencySquareRight1080p60\"],"
+            "\"stabilizationModes\":[\"off\",\"openclFeaturePoint\"],"
+            "\"openclAvailable\":%s,\"gpu\":%s,"
+            "\"output\":{\"width\":1920,\"height\":1080},"
+
+diff --git a/app/src/q3c/profile.c b/app/src/q3c/profile.c
+index cc54163..9bff58f 100644
+--- a/app/src/q3c/profile.c
++++ b/app/src/q3c/profile.c
+@@ -41,6 +41,42 @@ static const struct q3c_profile profiles[] = {
+         .maximum_video_delay_ms = 120,
+         .stabilized = true,
+     },
++    {
++        .id = Q3C_PROFILE_OBS_LOW_LATENCY_SQUARE_LEFT_1080P60,
++        .name = "obsLowLatencySquareLeft1080p60",
++        .server_crop = "1488:1488:288:360",
++        .presentation_angle = "20",
++        .input_width = 1488,
++        .input_height = 1488,
++        .output_width = 1080,
++        .output_height = 1080,
++        .window_width = 1080,
++        .window_height = 1080,
++        .video_bit_rate = 40000000,
++        .max_fps = 60,
++        .audio_delay_ms = 0,
++        .nominal_video_delay_ms = 0,
++        .maximum_video_delay_ms = 0,
++        .stabilized = false,
++    },
++    {
++        .id = Q3C_PROFILE_OBS_LOW_LATENCY_SQUARE_RIGHT_1080P60,
++        .name = "obsLowLatencySquareRight1080p60",
++        .server_crop = "1488:1488:2352:360",
++        .presentation_angle = "-22",
++        .input_width = 1488,
++        .input_height = 1488,
++        .output_width = 1080,
++        .output_height = 1080,
++        .window_width = 1080,
++        .window_height = 1080,
++        .video_bit_rate = 40000000,
++        .max_fps = 60,
++        .audio_delay_ms = 0,
++        .nominal_video_delay_ms = 0,
++        .maximum_video_delay_ms = 0,
++        .stabilized = false,
++    },
+ };
+ 
+ bool
+diff --git a/app/src/q3c/profile.h b/app/src/q3c/profile.h
+index 93613be..68418af 100644
+--- a/app/src/q3c/profile.h
++++ b/app/src/q3c/profile.h
+@@ -9,6 +9,8 @@ enum q3c_profile_id {
+     Q3C_PROFILE_NONE,
+     Q3C_PROFILE_OBS_LOW_LATENCY_1080P60,
+     Q3C_PROFILE_OBS_STABILIZED_1080P60,
++    Q3C_PROFILE_OBS_LOW_LATENCY_SQUARE_LEFT_1080P60,
++    Q3C_PROFILE_OBS_LOW_LATENCY_SQUARE_RIGHT_1080P60,
+ };
+ 
+ struct q3c_profile {
+-- 
+2.51.0

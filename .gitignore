@@ -1,0 +1,15 @@
+node_modules/
+.native-cache/
+.worktrees/
+.DS_Store
+.env
+dist/
+*.log
+.bundle-backup/
+resources/native/win32-x64.incoming/
+resources/native/win32-x64.previous/
+
+# Local agent tooling and notes, not part of the shipped project.
+.superpowers/
+docs/superpowers/
+AGENTS.md

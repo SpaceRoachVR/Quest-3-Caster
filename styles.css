@@ -1,0 +1,51 @@
+:root { color-scheme: dark; font-family: "Segoe UI", Arial, sans-serif; background: #10151d; color: #f5f7fb; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 600px; min-height: 100vh; background: #10151d; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+.app-shell { min-height: 100vh; background: #10151d; }
+.topbar { height: 80px; padding: 0 42px; border-bottom: 1px solid #2a323d; display: flex; align-items: center; justify-content: space-between; background: #111821; }
+.wordmark { border: 0; padding: 0; background: transparent; color: #f5f7fb; font-size: 22px; font-weight: 700; letter-spacing: -.4px; }
+.topbar-actions { display: flex; align-items: center; gap: 22px; }
+.connection-status { color: #aeb8c8; font-size: 14px; }
+.text-button, .back-button { border: 0; background: transparent; color: #76a9ff; padding: 6px 0; font-weight: 600; }
+.workspace { max-width: 760px; margin: 0 auto; padding: 42px; }
+.cast-panel, .setup-card { border: 1px solid #2a323d; border-radius: 14px; background: #171e27; }
+.cast-panel { padding: 42px; }
+.device-hero { display: flex; align-items: center; justify-content: space-between; gap: 22px; }.device-hero > div { min-width: 0; }.headset-hero-image { width: 180px; height: 118px; object-fit: cover; object-position: center; border-radius: 10px; flex: 0 0 auto; }
+.eyebrow { color: #78aaff; font-size: 12px; font-weight: 700; letter-spacing: 1.2px; margin: 0 0 12px; }
+/* text-wrap: balance stops "Connect your Quest 3" orphaning the "3" onto its
+   own line once the hero image narrows the text column. */
+h1 { margin: 0; font-size: 42px; letter-spacing: -1.2px; text-wrap: balance; }
+h2 { margin: 0; font-size: 18px; }
+.lead { margin: 12px 0 0; color: #aeb8c8; font-size: 16px; line-height: 1.55; max-width: 610px; }
+.usb-section { margin: 22px 0 28px; }
+.availability { min-height: 22px; color: #aeb8c8; font-size: 14px; margin-bottom: 20px; }
+.availability[data-tone="ready"] { color: #56d486; }.availability[data-tone="error"], .form-message.error { color: #ff8a91; }.availability[data-tone="connecting"] { color: #86b3ff; }
+.primary-button, .secondary-button, .compact-button { border-radius: 8px; border: 1px solid transparent; min-height: 46px; padding: 0 18px; font-weight: 700; }
+.primary-button { width: 100%; background: #2878f0; color: white; }.primary-button:hover:not(:disabled) { background: #4088f4; }.primary-button:disabled { opacity: .5; cursor: not-allowed; }
+.secondary-button, .compact-button { background: #202936; color: #f5f7fb; border-color: #344052; }.secondary-button:hover, .compact-button:hover { border-color: #6e9eec; background: #273244; }
+.compact-button { min-height: 36px; padding: 0 12px; font-size: 13px; white-space: nowrap; }
+.section-divider { height: 1px; background: #2b3441; margin: 34px 0; }
+.profile-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.profile-option { text-align: left; min-height: 84px; padding: 15px 16px; color: #dfe6f1; background: #1c2530; border: 1px solid #354151; border-radius: 9px; }.profile-option strong, .profile-option span { display: block; }.profile-option span { margin-top: 5px; font-size: 13px; color: #9ca9bb; }.profile-option.selected { border-color: #3e85f4; background: #1a2b44; }.profile-option.selected strong { color: #85b5ff; }.profile-option:disabled { cursor: not-allowed; opacity: .48; }
+.output-format-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }.output-format-option { text-align: left; min-height: 74px; padding: 14px 16px; color: #dfe6f1; background: #1c2530; border: 1px solid #354151; border-radius: 9px; }.output-format-option strong, .output-format-option span { display: block; }.output-format-option span { margin-top: 5px; font-size: 13px; color: #9ca9bb; }.output-format-option.selected { border-color: #3e85f4; background: #1a2b44; }.output-format-option.selected strong { color: #85b5ff; }.output-eye-toggle { margin-top: 8px; }
+.profile-note { color: #9ca9bb; font-size: 13px; margin: 12px 0 0; line-height: 1.45; }
+.volume-list { margin-top: 14px; border-top: 1px solid #2b3441; }
+.volume-row { min-height: 76px; display: flex; align-items: center; gap: 18px; border-bottom: 1px solid #2b3441; }
+.volume-row label { flex: 1 1 auto; }
+.volume-row strong, .volume-row small { display: block; }
+.volume-row small { margin-top: 5px; color: #9ca9bb; font-size: 12px; line-height: 1.35; }
+.volume-row output { flex: 0 0 auto; width: 44px; text-align: right; color: #9ca9bb; font-variant-numeric: tabular-nums; font-size: 13px; }
+.volume-row input[type="range"] { flex: 0 0 auto; width: 168px; height: 4px; -webkit-appearance: none; appearance: none; background: #3a4655; border-radius: 2px; }
+.volume-row input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #2878f0; border: 3px solid #fff; cursor: pointer; }
+.volume-row input[type="range"]:focus-visible { outline: 2px solid #a5c7ff; outline-offset: 4px; }
+/* The microphone level stays visible when the mic is off so the capability is
+   discoverable, rather than hidden until a toggle elsewhere is found. */
+.volume-row.disabled label, .volume-row.disabled output { opacity: .45; }
+.volume-row input[type="range"]:disabled { opacity: .35; cursor: not-allowed; }
+.preference-list { margin-top: 14px; border-top: 1px solid #2b3441; }
+.toggle-row { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid #2b3441; }.toggle-row strong, .toggle-row small { display: block; }.toggle-row small { margin-top: 5px; color: #9ca9bb; font-size: 12px; line-height: 1.35; }.toggle-row input { position: absolute; opacity: 0; }.toggle-row i { width: 42px; height: 24px; flex: 0 0 auto; border-radius: 12px; background: #3a4655; position: relative; }.toggle-row i::after { content: ""; width: 18px; height: 18px; border-radius: 50%; background: #fff; position: absolute; left: 3px; top: 3px; transition: transform .18s ease; }.toggle-row input:checked + i { background: #2878f0; }.toggle-row input:checked + i::after { transform: translateX(18px); }.toggle-row input:focus-visible + i { outline: 2px solid #a5c7ff; outline-offset: 3px; }
+.secondary-view { width: min(760px, calc(100% - 84px)); margin: 0 auto; padding: 38px 0 70px; }.secondary-view h1 { margin-top: 8px; }.back-button { margin-bottom: 34px; }.setup-card { padding: 26px; margin-top: 26px; }.setup-devices { margin: 18px 0; }.usb-device-button { display: block; width: 100%; text-align: left; padding: 14px; color: #eaf0fa; background: #202936; border: 1px solid #354151; border-radius: 8px; margin-bottom: 8px; }.usb-device-button.selected { border-color: #3e85f4; background: #1a2b44; }.field-label { display: block; margin: 20px 0 8px; font-size: 14px; font-weight: 700; }.field-label span { color: #9ca9bb; font-size: 12px; font-weight: 400; } input:not([type="checkbox"]) { width: 100%; min-height: 44px; background: #111821; color: #f4f7fb; border: 1px solid #394656; border-radius: 8px; padding: 0 12px; } input[readonly] { opacity: .65; cursor: default; } input:focus { outline: 2px solid #4b8df4; outline-offset: 1px; }.form-message { min-height: 20px; color: #aeb8c8; font-size: 13px; margin: 16px 0; }.button-row { display: flex; gap: 10px; align-items: center; }.button-row .secondary-button { flex: 1; }.button-row .primary-button { flex: 1; }.small-primary { min-height: 46px; }
+.hidden { display: none !important; }
+@media (max-width: 860px) { body { min-width: 0; }.topbar { padding: 0 22px; }.workspace { padding: 22px; }.cast-panel { padding: 28px; }.secondary-view { width: min(760px, calc(100% - 44px)); }.device-hero { align-items: start; }.headset-hero-image { width: 140px; height: 92px; } }

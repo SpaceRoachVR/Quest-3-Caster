@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Unit tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+        # The unit tests use fixtures only; the LFS payload is not needed here.
+        with:
+          lfs: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # The Electron binary is only needed to run the app, not to run the
+      # tests, and downloading it costs ~100 MB per job.
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - run: npm test
+
+  native-verify:
+    name: Verify native bundle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        # native:verify executes the bundled Windows binaries, so the LFS
+        # payload must be materialised rather than left as pointer files.
+        with:
+          lfs: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - run: npm run native:verify
+
+  package:
+    name: Package installer
+    runs-on: windows-latest
+    needs: [test, native-verify]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Proves a fresh clone can still produce the shipped layout. Building the
+      # unpacked directory is enough to catch a missing icon or native bundle
+      # without spending the time an NSIS installer costs.
+      - run: npm run dist:dir
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quest-3-caster-unpacked
+          path: dist/win-unpacked/
+          retention-days: 7

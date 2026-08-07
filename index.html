@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Quest 3 Caster</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <button class="wordmark" id="home-button" type="button" aria-label="Quest 3 Caster home">Quest 3 Caster</button>
+      <div class="topbar-actions">
+        <span class="connection-status" id="connection-status" aria-live="polite">Not connected</span>
+        <button class="text-button" id="settings-button" type="button">Settings</button>
+      </div>
+    </header>
+
+    <main class="workspace" id="home-view">
+      <section class="cast-panel" aria-labelledby="home-title">
+        <div class="device-hero"><div><p class="eyebrow">QUEST CASTING</p>
+        <h1 id="home-title">Connect your Quest 3</h1>
+        <p class="lead" id="selected-device-address">Connect the headset by USB, accept the debugging prompt in the headset, then scan below.</p></div><img class="headset-hero-image" src="resources/ui/quest-3-headset-hero.png" alt="Meta Quest 3 headset"></div>
+
+        <div class="usb-section">
+          <button class="secondary-button" id="scan-usb-button" type="button">Scan USB devices</button>
+          <div class="setup-devices" id="usb-device-list"></div>
+          <label class="field-label" for="headset-ip-input">Headset IP address</label>
+          <input id="headset-ip-input" inputmode="decimal" placeholder="Detected after you select a USB headset" readonly>
+          <p class="form-message" id="pairing-message" role="status"></p>
+        </div>
+
+        <div class="availability" id="availability-message" role="status">Scan USB devices to begin.</div>
+        <button class="primary-button" id="start-cast-button" type="button" disabled>Start casting</button>
+
+        <div class="section-divider"></div>
+        <h2>Casting profile</h2>
+        <div class="profile-options" role="radiogroup" aria-label="Casting profile">
+          <button class="profile-option selected" id="low-latency-profile" type="button" role="radio" aria-checked="true" data-profile="obsLowLatency1080p60">
+            <strong>Low Latency</strong><span>Best for responsive play</span>
+          </button>
+          <button class="profile-option" id="stabilized-profile" type="button" role="radio" aria-checked="false" data-profile="obsStabilized1080p60">
+            <strong>Stabilized</strong><span>Smoother video, added delay</span>
+          </button>
+        </div>
+        <p class="profile-note" id="profile-note">Low Latency is the default for responsive casting.</p>
+
+        <div class="section-divider"></div>
+        <h2>Output format</h2>
+        <div class="output-format-options" role="radiogroup" aria-label="Output format">
+          <button class="output-format-option selected" id="widescreen-output" type="button" role="radio" aria-checked="true" data-output-format="widescreen">
+            <strong>16:9</strong><span>Widescreen single-eye output</span>
+          </button>
+          <button class="output-format-option" id="square-output" type="button" role="radio" aria-checked="false" data-output-format="square">
+            <strong>1:1</strong><span>Square single-eye output</span>
+          </button>
+        </div>
+        <div class="output-format-options output-eye-options hidden" id="right-eye-option" role="radiogroup" aria-label="Which eye to capture">
+          <button class="output-format-option selected" id="left-eye-button" type="button" role="radio" aria-checked="true" data-eye="left">
+            <strong>Left eye</strong><span>Default</span>
+          </button>
+          <button class="output-format-option" id="right-eye-button" type="button" role="radio" aria-checked="false" data-eye="right">
+            <strong>Right eye</strong><span>Alternate framing</span>
+          </button>
+        </div>
+        <input id="right-eye-toggle" type="checkbox" hidden>
+        <p class="profile-note" id="output-format-note">16:9 uses the calibrated single-eye output for the selected profile.</p>
+
+        <div class="section-divider"></div>
+        <h2>Cast preferences</h2>
+        <div class="preference-list">
+          <label class="toggle-row"><span><strong>Include headset microphone</strong><small>Send your Quest microphone as a separate stream.</small></span><input id="microphone-toggle" type="checkbox"><i></i></label>
+          <label class="toggle-row"><span><strong>Keep headset awake</strong><small>Prevent the proximity sensor from sleeping during a cast.</small></span><input id="awake-toggle" type="checkbox"><i></i></label>
+          <label class="toggle-row"><span><strong>Reconnect automatically</strong><small>Retry a dropped cast with bounded delays.</small></span><input id="reconnect-toggle" type="checkbox" checked><i></i></label>
+        </div>
+
+        <div class="section-divider"></div>
+        <h2>Audio levels</h2>
+        <div class="volume-list">
+          <div class="volume-row">
+            <label for="game-volume-slider"><strong>Game audio</strong><small>Headset game sound as captured by OBS.</small></label>
+            <input id="game-volume-slider" type="range" min="0" max="100" step="1" value="100">
+            <output id="game-volume-value" for="game-volume-slider">100%</output>
+          </div>
+          <div class="volume-row disabled" id="mic-volume-row">
+            <label for="mic-volume-slider"><strong>Headset microphone</strong><small id="mic-volume-hint">Your voice, balanced against game audio.</small></label>
+            <input id="mic-volume-slider" type="range" min="0" max="100" step="1" value="100">
+            <output id="mic-volume-value" for="mic-volume-slider">100%</output>
+          </div>
+          <p class="profile-note" id="volume-note">Levels are saved and applied to the Windows volume mixer while casting.</p>
+        </div>
+      </section>
+    </main>
+
+    <main class="secondary-view hidden" id="settings-view" aria-labelledby="settings-title">
+      <button class="back-button" id="settings-back-button" type="button">Back to casting</button>
+      <p class="eyebrow">SETTINGS</p><h1 id="settings-title">Diagnostics</h1>
+      <p class="lead">Use these tools only if Quest 3 Caster cannot find ADB or scrcpy automatically.</p>
+      <div class="setup-card">
+        <label class="field-label" for="adb-path-input">Custom ADB path <span>Optional</span></label><input id="adb-path-input" placeholder="Uses the bundled or system ADB by default">
+        <label class="field-label" for="scrcpy-path-input">Custom scrcpy path <span>Optional</span></label><input id="scrcpy-path-input" placeholder="Uses the bundled or system scrcpy by default">
+        <div class="button-row"><button class="secondary-button" id="verify-paths-button" type="button">Verify executables</button><button class="secondary-button" id="open-log-folder-button" type="button">Open log folder</button></div>
+        <p class="form-message" id="diagnostics-message" role="status"></p>
+      </div>
+    </main>
+  </div>
+  <script src="lib/renderer-quality.js"></script>
+  <script src="lib/renderer-lifecycle.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
