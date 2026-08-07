@@ -39,7 +39,16 @@ verification of the installed replacement. A verification failure restores
 the original. If Windows file locking prevents restoration, the command
 preserves both directories and reports their exact manual-recovery locations.
 
-The matching unmodified scrcpy server is downloaded from the pinned official
-4.1 release asset. Replacing the server with another version is unsupported
-because it changes the client/server protocol contract and is rejected by the
-bundle metadata checks.
+The matching scrcpy server is built from the same pinned 4.1 source as the
+client, with the same patch series applied, rather than downloaded from the
+upstream release. Patch 0004 makes the Android playback capture match every
+audio usage that can carry application audio. Upstream matches `USAGE_MEDIA`
+alone, and Meta Quest titles emit `USAGE_GAME`, so on a headset the upstream
+server builds an empty capture mix and forwards digital silence without
+reporting an error. The server build runs under the checksum-pinned JDK and
+Android SDK platform and build-tools archives declared in
+`native/dependencies.json`, and uses the upstream `build_without_gradle.sh`
+entry point, so it needs no Gradle, no Android Studio, and no network access
+beyond the pinned downloads. Replacing the server with another version is
+unsupported because it changes the client/server protocol contract and is
+rejected by the bundle metadata checks.

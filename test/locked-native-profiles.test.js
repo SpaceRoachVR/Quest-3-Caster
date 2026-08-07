@@ -33,7 +33,9 @@ test('locked profiles derive only trusted native arguments', () => {
     '--port', '27190',
     '--no-video',
     '--no-control',
-    '--audio-source', 'mic',
+    // Not plain MIC: that source is echo-cancelled against the headset
+    // speakers, which suppresses the wearer's voice while game audio is loud.
+    '--audio-source', 'mic-voice-recognition',
     '--audio-codec', 'opus',
     '--audio-buffer=100',
   ]);

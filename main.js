@@ -478,7 +478,7 @@ function normalizeStreamConfig(streamConfig, displaySize) {
   if (streamConfig.streamMic !== undefined && typeof streamConfig.streamMic !== 'boolean') {
     throw new Error('Microphone stream state must be a boolean.');
   }
-  if (streamConfig.micSource !== undefined && !['mic', 'mic-unprocessed', 'mic-voice-communication'].includes(streamConfig.micSource)) {
+  if (streamConfig.micSource !== undefined && !['mic', 'mic-unprocessed', 'mic-voice-recognition', 'mic-voice-communication'].includes(streamConfig.micSource)) {
     throw new Error('Unsupported microphone source.');
   }
   getStreamPresentationArgs(streamConfig);
@@ -568,7 +568,10 @@ async function launchMicrophoneStream(generation, streamConfig, runtimeConfig) {
     '--port', '27190',
     '--no-video',
     '--no-control',
-    '--audio-source', streamConfig.micSource || 'mic',
+    // Defaults to VOICE_RECOGNITION for the same reason as the locked
+    // profiles: MIC is echo-cancelled against the headset speakers, which
+    // suppresses the wearer's voice whenever game audio is loud.
+    '--audio-source', streamConfig.micSource || 'mic-voice-recognition',
     '--audio-codec', 'aac'
   ];
   sendLog(`[System] Launching secondary scrcpy instance to stream headset microphone.`);

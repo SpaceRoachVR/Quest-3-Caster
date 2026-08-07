@@ -44,8 +44,10 @@ is used only to generate a MinGW import library for the Windows system
 - libusb 1.0.30 is licensed under LGPL-2.1-or-later.
 - Android SDK Platform Tools 37.0.0 are redistributed subject to the Android
   SDK license included by Google in that distribution.
-- The unmodified scrcpy server 4.1 is the official upstream release artifact
-  and is licensed under Apache License 2.0.
+- The scrcpy server 4.1 is licensed under Apache License 2.0. It is no longer
+  the upstream release artifact: it is built from the pinned upstream source
+  with the patch series in `native/patches/` applied. Those patches are the
+  complete record of the modifications.
 
 Exact source URLs, artifact filenames, versions, and SHA-256 values are in
 `native/dependencies.json`. See `native/SOURCE_OFFER.md` for complete rebuild

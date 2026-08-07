@@ -17,6 +17,7 @@ test('extends the pinned patch series with modular native profile and filter log
     '0001-enable-libavfilter-opencl-link-proof.patch',
     '0002-add-locked-obs-profiles-and-opencl-stabilizer.patch',
     '0003-add-locked-square-eye-profiles.patch',
+    '0004-capture-quest-game-audio-usages.patch',
   ]);
 
   const patch = read(`native/patches/${series[1]}`);

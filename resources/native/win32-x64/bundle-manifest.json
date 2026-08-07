@@ -63,12 +63,12 @@
     },
     {
       "path": "SOURCE_OFFER.md",
-      "sha256": "f249d7201c8694fa15c6a85e4c539f39222f235056b6196f63217ed15755940c",
+      "sha256": "cb607b9e2a2dab2aca4a4bdeca4092f8c9a29de81f364911795c2e19406f61b5",
       "role": "source-offer"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "sha256": "844f846ac2e1f09ebeaefeb60a917cb09ef4a23305a3f9f831237c3c31672149",
+      "sha256": "3534e425519f74619f409b789f3200f6a951e1f8da653b2ef7c902017aaf910c",
       "role": "notice"
     },
     {
@@ -133,7 +133,7 @@
     },
     {
       "path": "scrcpy-server",
-      "sha256": "deacb991ed2509715160ffdc7907e47b4160eb30d1566217e9047fd5b8850cae",
+      "sha256": "260ddeb12f69e7422796f357def6c069a5640006d87b175260cc81109e4bed98",
       "role": "server"
     },
     {

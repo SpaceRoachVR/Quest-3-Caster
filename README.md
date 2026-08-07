@@ -124,6 +124,21 @@ Stabilized remains opt-in until the physical Quest and OBS acceptance checklist 
 
 Use Window Capture and select `[scrcpy.exe]: Quest 3 Stream (Caster)`. The locked profiles already produce the final calibrated image (1792x1008 for Low Latency, 1680x944 for Stabilized, 1080x1080 for the 1:1 modes); do not apply manual crop corrections in OBS.
 
+## Audio
+
+Game audio and the headset microphone arrive as two separate scrcpy processes, so OBS can capture and mix them independently.
+
+Game audio uses playback capture with `--audio-dup`, which duplicates the mix rather than taking it, so **sound keeps playing in the headset while casting**. The alternative capture route (`--audio-source=output`, mapped to `REMOTE_SUBMIX`) forwards the whole output but silences the headset, which is unusable while wearing it, so the locked profiles do not use it.
+
+Two Quest-specific behaviours are worth knowing, because both look like an application bug and neither reports an error:
+
+- **Upstream scrcpy captures no game audio on a Quest at all.** Its playback capture builds a loopback mix matching `USAGE_MEDIA` only, and Quest titles and the Horizon shell emit `USAGE_GAME`. The mix is created empty, capture succeeds, and the stream carries digital silence with nothing logged. Patch `0004` in `native/patches/` widens the mix rules, which is why the device server is built from source rather than downloaded.
+- **The microphone uses `mic-voice-recognition`, not `mic`.** The plain `MIC` source runs the Horizon OS echo-cancellation chain. Headset speakers bleed into the microphone, that chain treats game audio as echo, and its residual suppressor clamps the whole channel — the wearer's voice included — for as long as the game is loud. Measured at 8 to 16 dB of voice suppression during loud passages. `VOICE_RECOGNITION` is tuned for speech with echo cancellation and automatic gain control disabled.
+
+### Known issue
+
+Voice and game audio coexist well at normal levels, but **very loud game events (gunshots, explosions) can still compress or distort the voice channel.** The dominant playback-driven suppression is resolved; this residual artefact is under investigation and may be gain staging rather than echo cancellation. Lowering the headset speaker volume, or wearing headphones or earbuds so the speakers do not couple into the microphone at all, avoids it.
+
 ## Rebuilding the pinned Windows native bundle
 
 The bundled runtime is intentionally pinned and verified. `npm run native:build` rebuilds it; `npm run native:verify` checks the manifest, executable capabilities, and required native probes before use. The replacement workflow supports a manifest-verified shared-library replacement only; preserve the rollback bundle until verification succeeds.

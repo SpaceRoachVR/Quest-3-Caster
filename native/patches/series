@@ -1,3 +1,4 @@
 0001-enable-libavfilter-opencl-link-proof.patch
 0002-add-locked-obs-profiles-and-opencl-stabilizer.patch
 0003-add-locked-square-eye-profiles.patch
+0004-capture-quest-game-audio-usages.patch

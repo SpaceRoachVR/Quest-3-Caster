@@ -58,10 +58,22 @@ test('pins every native source and downloaded file in one valid manifest', () =>
       version: '37.0.0',
       sha256: '4fe305812db074cea32903a489d061eb4454cbc90a49e8fea677f4b7af764918',
     }],
-    ['scrcpy-server', {
-      kind: 'file',
-      version: '4.1',
-      sha256: 'deacb991ed2509715160ffdc7907e47b4160eb30d1566217e9047fd5b8850cae',
+    // The device server is built from the patched source tree, so the upstream
+    // release binary is no longer downloaded. These three pin that build.
+    ['jdk', {
+      kind: 'archive',
+      version: '17.0.20+8',
+      sha256: 'be7668bc030d578b83d6d5ef9221d6d6729bbbca8cf94a7d52e16ac68b5a5a35',
+    }],
+    ['android-platform', {
+      kind: 'archive',
+      version: '36-r02',
+      sha256: '37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e',
+    }],
+    ['android-build-tools', {
+      kind: 'archive',
+      version: '36.0.0',
+      sha256: '5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b',
     }],
     ['opencl-headers', {
       kind: 'archive',
@@ -97,6 +109,7 @@ test('keeps the native source patch minimal and focused on avfilter and OpenCL',
     '0001-enable-libavfilter-opencl-link-proof.patch',
     '0002-add-locked-obs-profiles-and-opencl-stabilizer.patch',
     '0003-add-locked-square-eye-profiles.patch',
+    '0004-capture-quest-game-audio-usages.patch',
   ]);
 
   const patch = readRepositoryFile(`native/patches/${series[0]}`);
@@ -105,6 +118,23 @@ test('keeps the native source patch minimal and focused on avfilter and OpenCL',
   assert.match(patch, /--enable-filter=deshake_opencl/);
   assert.match(patch, /avfilter_version/);
   assert.match(patch, /libavfilter:/);
+});
+
+test('captures the audio usages Quest emits instead of USAGE_MEDIA alone', () => {
+  // Upstream builds its loopback mix from USAGE_MEDIA only. Quest titles and the
+  // Horizon shell emit USAGE_GAME, so that mix is created empty and the capture
+  // succeeds while delivering digital silence, logging nothing. Without this
+  // patch the locked profiles ship with no game audio at all.
+  const patch = readRepositoryFile(
+    'native/patches/0004-capture-quest-game-audio-usages.patch',
+  );
+  assert.match(patch, /audio\/AudioPlaybackCapture\.java/);
+  assert.match(patch, /USAGE_GAME/);
+  assert.match(patch, /USAGE_MEDIA/);
+  // --audio-dup maps to ROUTE_FLAG_LOOP_BACK_RENDER, which is what keeps the
+  // audio playing in the headset. Capturing must not cost the wearer their game
+  // sound, so the route flag selection must remain untouched.
+  assert.doesNotMatch(patch, /^[-+].*ROUTE_FLAG_LOOP_BACK/m);
 });
 
 test('includes the reproducible OpenCL import and filter-probe overlays', () => {

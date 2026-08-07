@@ -1,0 +1,69 @@
+From d3aa880d212050f09e2dd6eca5dc6e1c4e3a8c75 Mon Sep 17 00:00:00 2001
+From: Quest 3 Caster Build <build@quest3caster.invalid>
+Date: Fri, 7 Aug 2026 12:00:00 -0500
+Subject: [PATCH] feat: capture Quest game audio usages in playback capture
+
+Upstream AudioPlaybackCapture matches USAGE_MEDIA only. Meta Quest titles and
+the Horizon shell emit USAGE_GAME, so the loopback mix is built empty and the
+capture succeeds while delivering digital silence, with nothing logged.
+
+Match every usage that can carry application audio, and add each rule
+independently so a usage the platform refuses cannot discard the ones it would
+have accepted.
+---
+ .../scrcpy/audio/AudioPlaybackCapture.java    | 29 +++++++++++++++++--
+ 1 file changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/server/src/main/java/com/genymobile/scrcpy/audio/AudioPlaybackCapture.java b/server/src/main/java/com/genymobile/scrcpy/audio/AudioPlaybackCapture.java
+index 009a239..f71c038 100644
+--- a/server/src/main/java/com/genymobile/scrcpy/audio/AudioPlaybackCapture.java
++++ b/server/src/main/java/com/genymobile/scrcpy/audio/AudioPlaybackCapture.java
+@@ -19,6 +19,16 @@ import java.nio.ByteBuffer;
+ 
+ public final class AudioPlaybackCapture implements AudioCapture {
+ 
++    // Upstream matches USAGE_MEDIA only. Standalone VR devices (Meta Quest / Horizon OS) emit game
++    // and system audio as USAGE_GAME, so a media-only mix rule produces a silent capture with no
++    // error. Match every usage that can carry application audio instead.
++    private static final int[] CAPTURED_USAGES = {
++            AudioAttributes.USAGE_MEDIA,
++            AudioAttributes.USAGE_GAME,
++            AudioAttributes.USAGE_UNKNOWN,
++            AudioAttributes.USAGE_ASSISTANCE_SONIFICATION,
++    };
++
+     private final boolean keepPlayingOnDevice;
+ 
+     private AudioRecord recorder;
+@@ -43,12 +53,25 @@ public final class AudioPlaybackCapture implements AudioCapture {
+             Method setTargetMixRoleMethod = audioMixingRuleBuilderClass.getMethod("setTargetMixRole", int.class);
+             setTargetMixRoleMethod.invoke(audioMixingRuleBuilder, mixRolePlayersConstant);
+ 
+-            AudioAttributes attributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build();
+-
+             // audioMixingRuleBuilder.addMixRule(AudioMixingRule.RULE_MATCH_ATTRIBUTE_USAGE, attributes);
+             int ruleMatchAttributeUsageConstant = audioMixingRuleClass.getField("RULE_MATCH_ATTRIBUTE_USAGE").getInt(null);
+             Method addMixRuleMethod = audioMixingRuleBuilderClass.getMethod("addMixRule", int.class, Object.class);
+-            addMixRuleMethod.invoke(audioMixingRuleBuilder, ruleMatchAttributeUsageConstant, attributes);
++
++            // A usage the platform refuses must not discard the usages it would have accepted.
++            int acceptedUsages = 0;
++            for (int usage : CAPTURED_USAGES) {
++                AudioAttributes attributes = new AudioAttributes.Builder().setUsage(usage).build();
++                try {
++                    addMixRuleMethod.invoke(audioMixingRuleBuilder, ruleMatchAttributeUsageConstant, attributes);
++                    ++acceptedUsages;
++                } catch (Exception e) {
++                    Ln.w("Audio playback capture: mix rule rejected for usage " + usage);
++                }
++            }
++            if (acceptedUsages == 0) {
++                Ln.e("Audio playback capture: the device accepted no usage mix rule");
++                throw new AudioCaptureException();
++            }
+ 
+             // AudioMixingRule audioMixingRule = builder.build();
+             Object audioMixingRule = audioMixingRuleBuilderClass.getMethod("build").invoke(audioMixingRuleBuilder);
+-- 
+2.43.0
+

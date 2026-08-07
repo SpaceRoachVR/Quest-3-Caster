@@ -15,6 +15,11 @@ SCRCPY_SOURCE_ROOT="$CACHE_ROOT/scrcpy-v4.1"
 OPENCL_SOURCE_ROOT="$CACHE_ROOT/opencl-headers"
 ZLIB_SOURCE_ROOT="$CACHE_ROOT/zlib-1.3.1"
 ZLIB_BUILD_ROOT="$CACHE_ROOT/zlib-build"
+JDK_ROOT="$CACHE_ROOT/jdk"
+ANDROID_SDK_ROOT="$CACHE_ROOT/android-sdk"
+ANDROID_PLATFORM="36"
+ANDROID_BUILD_TOOLS="36.0.0"
+SERVER_BUILD_ROOT="$CACHE_ROOT/scrcpy-server-build"
 PATCH_ROOT="$REPOSITORY_ROOT/native/patches"
 OVERLAY_ROOT="$REPOSITORY_ROOT/native/overlay"
 TARGET_TRIPLET="x86_64-w64-mingw32"
@@ -147,7 +152,9 @@ for source_id in \
     dav1d \
     libusb \
     platform-tools \
-    scrcpy-server \
+    jdk \
+    android-platform \
+    android-build-tools \
     opencl-headers; do
     download_source "$source_id"
 done
@@ -346,8 +353,61 @@ for adb_file in adb.exe AdbWinApi.dll AdbWinUsbApi.dll; do
     install -m 0755 "$ADB_INSTALL_ROOT/$adb_file" "$STAGE_ROOT/$adb_file"
 done
 
+# The device server is built from the patched tree rather than downloaded from
+# the upstream release. Patch 0004 teaches AudioPlaybackCapture to match the
+# audio usages Quest titles emit; without it the locked profiles capture digital
+# silence, because upstream matches USAGE_MEDIA only and Quest emits USAGE_GAME.
+safe_recreate_directory "$JDK_ROOT" "$CACHE_ROOT"
+tar -xf "$DOWNLOAD_ROOT/$(source_field jdk filename)" \
+    -C "$JDK_ROOT" \
+    --strip-components=1
+if [[ ! -x "$JDK_ROOT/bin/javac" ]]; then
+    echo "Pinned JDK archive does not contain bin/javac" >&2
+    exit 1
+fi
+
+safe_recreate_directory "$ANDROID_SDK_ROOT" "$CACHE_ROOT"
+mkdir -p -- "$ANDROID_SDK_ROOT/platforms" "$ANDROID_SDK_ROOT/build-tools"
+unzip -q "$DOWNLOAD_ROOT/$(source_field android-platform filename)" \
+    -d "$ANDROID_SDK_ROOT/platforms"
+unzip -q "$DOWNLOAD_ROOT/$(source_field android-build-tools filename)" \
+    -d "$ANDROID_SDK_ROOT/build-tools"
+# The build-tools archive names its directory after the platform codename rather
+# than the version the build script looks up.
+BUILD_TOOLS_EXTRACTED="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d)"
+if [[ "$(printf '%s\n' "$BUILD_TOOLS_EXTRACTED" | wc -l)" -ne 1 ]]; then
+    echo "Pinned build-tools archive did not extract exactly one directory" >&2
+    exit 1
+fi
+mv -- "$BUILD_TOOLS_EXTRACTED" "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS"
+for android_file in \
+    "platforms/android-$ANDROID_PLATFORM/android.jar" \
+    "platforms/android-$ANDROID_PLATFORM/framework.aidl" \
+    "build-tools/$ANDROID_BUILD_TOOLS/d8" \
+    "build-tools/$ANDROID_BUILD_TOOLS/core-lambda-stubs.jar"; do
+    if [[ ! -e "$ANDROID_SDK_ROOT/$android_file" ]]; then
+        echo "Pinned Android SDK archives did not produce $android_file" >&2
+        exit 1
+    fi
+done
+
+safe_recreate_directory "$SERVER_BUILD_ROOT" "$CACHE_ROOT"
+(
+    cd "$SCRCPY_SOURCE_ROOT/server"
+    JAVA_HOME="$JDK_ROOT" \
+    PATH="$JDK_ROOT/bin:$PATH" \
+    ANDROID_HOME="$ANDROID_SDK_ROOT" \
+    ANDROID_PLATFORM="$ANDROID_PLATFORM" \
+    ANDROID_BUILD_TOOLS="$ANDROID_BUILD_TOOLS" \
+    BUILD_DIR="$SERVER_BUILD_ROOT" \
+        ./build_without_gradle.sh
+)
+if [[ ! -f "$SERVER_BUILD_ROOT/scrcpy-server" ]]; then
+    echo "Patched scrcpy server build did not produce scrcpy-server" >&2
+    exit 1
+fi
 install -m 0644 \
-    "$DOWNLOAD_ROOT/$(source_field scrcpy-server filename)" \
+    "$SERVER_BUILD_ROOT/scrcpy-server" \
     "$STAGE_ROOT/scrcpy-server"
 
 PKG_CONFIG_LIBDIR="$DEPS_INSTALL_ROOT/lib/pkgconfig" \
