@@ -133,11 +133,15 @@ Game audio uses playback capture with `--audio-dup`, which duplicates the mix ra
 Two Quest-specific behaviours are worth knowing, because both look like an application bug and neither reports an error:
 
 - **Upstream scrcpy captures no game audio on a Quest at all.** Its playback capture builds a loopback mix matching `USAGE_MEDIA` only, and Quest titles and the Horizon shell emit `USAGE_GAME`. The mix is created empty, capture succeeds, and the stream carries digital silence with nothing logged. Patch `0004` in `native/patches/` widens the mix rules, which is why the device server is built from source rather than downloaded.
-- **The microphone uses `mic-voice-recognition`, not `mic`.** The plain `MIC` source runs the Horizon OS echo-cancellation chain. Headset speakers bleed into the microphone, that chain treats game audio as echo, and its residual suppressor clamps the whole channel — the wearer's voice included — for as long as the game is loud. Measured at 8 to 16 dB of voice suppression during loud passages. `VOICE_RECOGNITION` is tuned for speech with echo cancellation and automatic gain control disabled.
+- **The microphone uses `mic-voice-recognition`, not `mic`.** The plain `MIC` source runs the Horizon OS echo-cancellation chain. Headset speakers bleed into the microphone, that chain treats game audio as echo, and its residual suppressor clamps the whole channel — the wearer's voice included — for as long as the game is loud. `VOICE_RECOGNITION` is tuned for speech with echo cancellation and automatic gain control disabled, and a side-by-side listening comparison of the two sources recorded from the same speech and the same game audio is clearly better on `VOICE_RECOGNITION`.
 
-### Known issue
+The microphone stream is encoded at **256 kbps** rather than scrcpy's 128 kbps default. A close microphone worn inside a headset is a hot, dense signal, and the wearer raises their voice over loud game audio, so the encoder runs out of bits exactly when the material is hardest. At 128 kbps that smears audibly through gunfire; at 256 kbps it is indistinguishable from an uncompressed capture of the same scene.
 
-Voice and game audio coexist well at normal levels, but **very loud game events (gunshots, explosions) can still compress or distort the voice channel.** The dominant playback-driven suppression is resolved; this residual artefact is under investigation and may be gain staging rather than echo cancellation. Lowering the headset speaker volume, or wearing headphones or earbuds so the speakers do not couple into the microphone at all, avoids it.
+Game audio still uses the 128 kbps default. It is a mixed and mastered signal rather than a close microphone, so it has not shown the same artefact, and its bit rate lives in the locked profile inside `native/patches/` — raising it means a server rebuild rather than a flag.
+
+### Headset volume does not affect the recording
+
+Game audio is captured inside Android's audio policy, upstream of the speaker amplifier, so **the headset volume control has no effect on the level OBS receives.** Measured across a change from 14/15 to 5/15: −1.7 dBFS against −1.4 dBFS captured. Run the headset as quiet as is comfortable; it costs the recording nothing and reduces how much game audio the microphone picks up acoustically.
 
 ## Rebuilding the pinned Windows native bundle
 

@@ -37,6 +37,9 @@ test('locked profiles derive only trusted native arguments', () => {
     // speakers, which suppresses the wearer's voice while game audio is loud.
     '--audio-source', 'mic-voice-recognition',
     '--audio-codec', 'opus',
+    // Above scrcpy's 128 kbps default: that default smears a close microphone
+    // once the wearer raises their voice over loud game audio.
+    '--audio-bit-rate=256K',
     '--audio-buffer=100',
   ]);
   assert.equal(

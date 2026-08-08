@@ -572,7 +572,10 @@ async function launchMicrophoneStream(generation, streamConfig, runtimeConfig) {
     // profiles: MIC is echo-cancelled against the headset speakers, which
     // suppresses the wearer's voice whenever game audio is loud.
     '--audio-source', streamConfig.micSource || 'mic-voice-recognition',
-    '--audio-codec', 'aac'
+    '--audio-codec', 'aac',
+    // The 128 kbps default smears a close microphone once the wearer raises
+    // their voice over loud game audio. See the locked profile arguments.
+    '--audio-bit-rate=256K'
   ];
   sendLog(`[System] Launching secondary scrcpy instance to stream headset microphone.`);
   const child = spawn(runtimeConfig.scrcpyPath, micArgs, { windowsHide: true });
