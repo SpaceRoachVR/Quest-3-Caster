@@ -31,6 +31,16 @@ test('does not preserve Streaming after a primary exit while reconnect is pendin
   );
 });
 
+test('does not report a live primary while a reconnect is already pending for its generation', () => {
+  const pendingReconnect = { generation: 7, isActive: true, hasPendingReconnect: true };
+  const stillOwnedPrimary = {
+    generation: 7,
+    primary: { pid: 2468, killed: false, exitCode: null }
+  };
+
+  assert.equal(hasCurrentLivePrimary(pendingReconnect, stillOwnedPrimary), false);
+});
+
 test('requires the live primary ownership generation to match the active stream generation', () => {
   const session = { generation: 7, isActive: true, hasPendingReconnect: false };
   const stalePrimaryOwnership = {

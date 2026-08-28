@@ -58,7 +58,6 @@ test('rejects invalid stream settings before argument construction', () => {
   assert.throws(() => c.validateStreamConfig({ ...config, displayBuffer: -1 }, display), /Display buffer/);
   assert.throws(() => c.validateStreamConfig({ ...config, displayBuffer: 1001 }, display), /Display buffer/);
   assert.throws(() => c.validateStreamConfig({ ...config, videoEncoder: 'bad encoder' }, display), /encoder/);
-  assert.throws(() => c.validateStreamConfig({ ...config, audioSource: 'speaker' }, display), /audio source/);
   assert.throws(() => c.validateStreamConfig({ ...config, audioCodec: 'flac' }, display), /audio codec/);
   assert.deepEqual(
     c.validateStreamConfig({
@@ -91,7 +90,7 @@ test('builds production args without a max-size flag', () => {
   const args = c.buildScrcpyArguments({
     serial: '192.168.1.20:5555', bitRate: 40, maxFps: 60, maxSize: null,
     videoCodec: 'h264', crop: '1920:1080:2208:564', displayBuffer: 0,
-    noAudio: false, audioSource: 'output', audioBuffer: 0, audioCodec: 'opus',
+    noAudio: false, audioBuffer: 0, audioCodec: 'opus',
     displaySize: { width: 4128, height: 2208 }
   }, 3);
   assert.deepEqual(args.slice(0, 10), [
@@ -183,7 +182,7 @@ test('adds explicitly selected audio settings while retaining default audio omis
   const args = c.buildScrcpyArguments({
     serial: '192.168.1.20:5555', bitRate: 24, maxFps: 60, maxSize: 1440,
     videoCodec: 'h264', crop: '1920:1080:2208:564', displayBuffer: 0,
-    noAudio: false, audioSource: 'mic', audioBuffer: 50, audioCodec: 'aac', audioDup: true,
+    noAudio: false, audioBuffer: 50, audioCodec: 'aac', audioDup: true,
     displaySize: { width: 4128, height: 2208 }
   }, 3);
 
@@ -199,7 +198,7 @@ test('always duplicates playback audio to preserve headset sound during a cast',
   const args = c.buildScrcpyArguments({
     serial: '192.168.1.20:5555', bitRate: 24, maxFps: 60, maxSize: 1440,
     videoCodec: 'h264', crop: '1920:1080:2208:564', displayBuffer: 0,
-    noAudio: false, audioSource: 'output', audioBuffer: 0, audioCodec: 'opus', audioDup: false,
+    noAudio: false, audioBuffer: 0, audioCodec: 'opus', audioDup: false,
     displaySize: { width: 4128, height: 2208 }
   }, 3);
   assert.deepEqual(args.slice(-3), ['--audio-source', 'playback', '--audio-dup']);

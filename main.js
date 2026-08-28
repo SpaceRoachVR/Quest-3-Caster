@@ -18,6 +18,7 @@ const {
   formatOutputEstimate,
   getProductionProfile,
   parseCrop,
+  validateAdbSerial,
   validateStreamConfig
 } = require('./lib/stream-config');
 const { createStreamSession } = require('./lib/stream-session');
@@ -28,11 +29,28 @@ const {
   shouldCleanupFailedStart
 } = require('./lib/stream-start-outcome');
 const {
+  LOCKED_PROFILE_IDS,
   buildLockedMicrophoneArguments,
   buildLockedPrimaryArguments,
   isLockedProfileId,
   normalizeLockedStreamRequest
 } = require('./lib/locked-native-profiles');
+const { getProfileGeometry } = require('./lib/locked-profile-geometry');
+const { getLockedProfileSupport, identifyDevice } = require('./lib/device-registry');
+const {
+  buildCalibratedMicrophoneArguments,
+  buildCalibratedPrimaryArguments,
+  getCalibratedProfileAvailability,
+  isCalibratedProfileId,
+  normalizeCalibratedStreamRequest,
+  resolveCalibratedProfile
+} = require('./lib/calibrated-profiles');
+const { launchCalibratedAttempt } = require('./lib/calibrated-startup');
+const {
+  assertCalibrationMatchesDisplay,
+  loadCalibration
+} = require('./lib/calibration-store');
+const { describeDisplayOverride, parseWmSizes } = require('./lib/display-geometry');
 const { connectWirelessTarget } = require('./lib/wireless-adb');
 const {
   buildLockedProfilePreflight,
@@ -335,27 +353,6 @@ function getBundledToolPaths() {
   return cachedBundledToolPaths;
 }
 
-function validateAdbSerial(serial) {
-  if (typeof serial !== 'string' || serial.length === 0 || serial.length > 255 || serial.trim() !== serial) {
-    throw new Error('A valid ADB serial is required.');
-  }
-
-  const wirelessMatch = /^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/.exec(serial);
-  if (wirelessMatch) {
-    const port = Number(wirelessMatch[2]);
-    const octets = wirelessMatch[1].split('.').map(Number);
-    if (octets.every((octet) => octet >= 0 && octet <= 255) && port >= 1 && port <= 65535) {
-      return serial;
-    }
-    throw new Error('A valid ADB serial is required.');
-  }
-
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(serial)) {
-    throw new Error('A valid ADB serial is required.');
-  }
-  return serial;
-}
-
 function runFile(executable, args, timeoutMs = 10000) {
   const executionOptions = typeof timeoutMs === 'object' && timeoutMs !== null
     ? timeoutMs
@@ -418,30 +415,51 @@ function runAdb(args, config) {
   return runFile(runtimeConfig.adbPath, args);
 }
 
-function parseWmSize(output) {
-  if (typeof output !== 'string') {
-    return null;
+async function readDisplayGeometry(serial, runtimeConfig) {
+  const result = await runFile(runtimeConfig.adbPath, ['-s', serial, 'shell', 'wm', 'size']);
+  const { physical, override } = parseWmSizes(result.stdout);
+  const effective = override || physical;
+  if (!effective) {
+    throw new Error(result.stderr || result.error || 'Unable to determine headset display size.');
   }
-
-  const match = /(?:Physical|Override)\s+size:\s*(\d+)x(\d+)/i.exec(output);
-  if (!match) {
-    return null;
-  }
-
-  const width = Number(match[1]);
-  const height = Number(match[2]);
-  return Number.isSafeInteger(width) && width > 0 && Number.isSafeInteger(height) && height > 0
-    ? { width, height }
-    : null;
+  return {
+    displaySize: { width: effective.width, height: effective.height },
+    physical,
+    override
+  };
 }
 
 async function getDisplaySize(serial, runtimeConfig) {
-  const result = await runFile(runtimeConfig.adbPath, ['-s', serial, 'shell', 'wm', 'size']);
-  const displaySize = parseWmSize(result.stdout);
-  if (!displaySize) {
-    throw new Error(result.stderr || result.error || 'Unable to determine headset display size.');
+  return (await readDisplayGeometry(serial, runtimeConfig)).displaySize;
+}
+
+// Two headsets share a panel resolution, so geometry alone cannot name the
+// device. The model turns "your display must be 4128x2208" into "your Quest 3S
+// is not calibrated yet". Best-effort: a headset that will not answer still
+// preflights, it just gets identified by geometry.
+// A user's own measurement of their own headset outranks anything shipped,
+// because a calibration is per-unit rather than per-model. `app.getPath` is
+// unavailable outside Electron, so the user directory is best-effort.
+function getCalibrationDirectories() {
+  const directories = [];
+  try {
+    directories.push(path.join(app.getPath('userData'), 'calibration'));
+  } catch (_error) {
+    // Falls through to the bundled directory below.
   }
-  return displaySize;
+  directories.push(path.join(__dirname, 'calibration'));
+  return directories;
+}
+
+async function readDeviceModel(serial, runtimeConfig) {
+  try {
+    const result = await runFile(
+      runtimeConfig.adbPath, ['-s', serial, 'shell', 'getprop', 'ro.product.model']);
+    const model = String(result.stdout || '').trim();
+    return model && model.length <= 64 ? model : null;
+  } catch (_error) {
+    return null;
+  }
 }
 
 function getStreamPresentationArgs(streamConfig) {
@@ -625,6 +643,11 @@ function finalizeNativeTerminal(context, message) {
   if (!isNativeContextCurrent(context) || context.terminal) return;
   context.terminal = true;
   context.fallbackInFlight = false;
+  const owned = childOwnership.snapshot();
+  if (owned.generation === context.generation) {
+    context.terminatingChildren.retain(owned.primary);
+    context.terminatingChildren.retain(owned.microphone);
+  }
   if (context.terminatingChildren.canLaunchReplacement()) {
     clearOwnedNativeChildren(context);
   } else {
@@ -665,10 +688,12 @@ function handleNativeRuntimeExit(context, attemptRecord, child, event) {
 
 async function launchLockedMicrophoneStream(context, attemptRecord, primaryChild) {
   if (!context.request.streamMic) return null;
-  const micArgs = buildLockedMicrophoneArguments(
-    context.request,
-    attemptRecord.attempt.profileId
-  );
+  const micArgs = context.mode === 'calibrated'
+    ? buildCalibratedMicrophoneArguments(context.request)
+    : buildLockedMicrophoneArguments(
+      context.request,
+      attemptRecord.attempt.profileId
+    );
   sendLog('[System] Launching verified bundled microphone stream.');
   let child;
   try {
@@ -741,7 +766,11 @@ async function performRuntimeFallback(context, attemptRecord, reason) {
   }
   clearOwnedNativeChildren(context, currentChild);
   const fallbackAttempt = context.state.beginFallback(attemptRecord.attempt.token);
-  if (!fallbackAttempt || !isNativeContextCurrent(context)) return;
+  if (!isNativeContextCurrent(context)) return;
+  if (!fallbackAttempt) {
+    context.fallback.terminate('Low Latency fallback could not begin.');
+    return;
+  }
   sendLog(`[System-Warning] ${reason} Falling back once to OBS Low Latency.`);
   try {
     const result = await launchLockedProfileAttempt(context, fallbackAttempt);
@@ -778,8 +807,13 @@ async function launchLockedProfileAttempt(context, attempt) {
     ...context.request,
     profileId: attempt.profileId
   });
-  const args = buildLockedPrimaryArguments(attemptRequest, context.generation);
-  sendLog(`[System] Launching verified bundled ${attempt.profileId} with trusted native arguments.`);
+  const calibrated = context.mode === 'calibrated';
+  const args = calibrated
+    ? buildCalibratedPrimaryArguments(attemptRequest, context.calibration)
+    : buildLockedPrimaryArguments(attemptRequest, context.generation);
+  sendLog(calibrated
+    ? `[System] Launching ${attempt.profileId} from this headset's calibration.`
+    : `[System] Launching verified bundled ${attempt.profileId} with trusted native arguments.`);
   let child;
   try {
     child = spawn(
@@ -797,14 +831,19 @@ async function launchLockedProfileAttempt(context, attempt) {
 
   let attemptHandle;
   try {
-    attemptHandle = await launchNativeAttempt({
+    // Both paths resolve to the same handle shape. They differ only in what
+    // counts as proof the stream is live: the fork's own ready event, or
+    // scrcpy's texture line matched against the measured crop.
+    const awaitAttempt = calibrated ? launchCalibratedAttempt : launchNativeAttempt;
+    attemptHandle = await awaitAttempt({
       child,
       generation: context.generation,
       profileId: attempt.profileId,
+      expectedOutput: calibrated ? context.expectedOutput : undefined,
       expectedGpu: attempt.profileId === 'obsStabilized1080p60'
         ? context.capabilities.gpu
         : null,
-      startupTimeoutMs: 10000,
+      startupTimeoutMs: calibrated ? 15000 : 10000,
       onLog: (line) => {
         if (isNativeAttemptCurrent(context, attemptRecord)) {
           sendLog(`[scrcpy] ${line}`);
@@ -1110,13 +1149,19 @@ ipcMain.handle('preflight-stream', async (_event, serial, config) => {
         warnings: []
       };
     }
-    const displaySize = await getDisplaySize(safeSerial, runtimeConfig);
+    const displayGeometry = await readDisplayGeometry(safeSerial, runtimeConfig);
+    const displaySize = displayGeometry.displaySize;
+    const deviceModel = await readDeviceModel(safeSerial, runtimeConfig);
+    const displayOverrideWarning = describeDisplayOverride(displayGeometry);
     const productionProfile = getProductionProfile(displaySize);
     const expectedOutput = productionProfile
       ? formatOutputEstimate(calculateOutputSize(parseCrop(productionProfile.crop), productionProfile.maxSize, 2))
       : null;
     const encodersResult = await runFile(runtimeConfig.scrcpyPath, ['--list-encoders']);
     const warnings = [];
+    if (displayOverrideWarning) {
+      warnings.push(displayOverrideWarning);
+    }
     if (!encodersResult.success) {
       warnings.push('Unable to enumerate scrcpy encoders; Automatic H.264 remains available.');
     }
@@ -1125,40 +1170,47 @@ ipcMain.handle('preflight-stream', async (_event, serial, config) => {
     try {
       const nativeRuntime = getVerifiedNativeRuntime();
       const capabilities = await runCapabilityProbe(nativeRuntime, { runFile });
-      lockedPreflight = buildLockedProfilePreflight({ capabilities, displaySize });
+      lockedPreflight = buildLockedProfilePreflight({ capabilities, displaySize, model: deviceModel });
       warnings.push(...lockedPreflight.warnings);
     } catch (error) {
       nativeBundleError = error.message;
+      // Every profile is unavailable here, but each still reports the size and
+      // delay it would deliver, so the UI describes the same stream whether or
+      // not the native bundle loaded. Built from the shared geometry rather
+      // than written out, which is what let this list fall behind: it named
+      // two of the four profiles and gave Low Latency the wrong output.
       lockedPreflight = {
-        profiles: [
-          {
-            id: 'obsLowLatency1080p60',
+        profiles: LOCKED_PROFILE_IDS.map((id) => {
+          const geometry = getProfileGeometry(id);
+          return {
+            id,
             available: false,
             reason: nativeBundleError,
-            output: { width: 1920, height: 1080 },
-            stabilization: 'off',
+            output: geometry.output,
+            stabilization: geometry.stabilization,
             gpu: null,
-            nominalDelayMs: 0,
-            maximumDelayMs: 0
-          },
-          {
-            id: 'obsStabilized1080p60',
-            available: false,
-            reason: nativeBundleError,
-            output: { width: 1920, height: 1080 },
-            stabilization: 'openclFeaturePoint',
-            gpu: null,
-            nominalDelayMs: 100,
-            maximumDelayMs: 120
-          }
-        ],
-        output: { width: 1920, height: 1080 },
+            nominalDelayMs: geometry.nominalDelayMs,
+            maximumDelayMs: geometry.maximumDelayMs
+          };
+        }),
+        output: getProfileGeometry(LOCKED_PROFILE_IDS[0]).output,
         geometry: {
           detected: displaySize,
           calibrated: { width: 4128, height: 2208 },
           available: false,
           calibrationVerified: false
         },
+        device: (() => {
+          const identification = identifyDevice({ model: deviceModel, displaySize });
+          return {
+            id: identification.device.id,
+            name: identification.device.name,
+            model: deviceModel,
+            calibration: getLockedProfileSupport(identification).tier,
+            matchedBy: identification.matchedBy,
+            eye: identification.device.eye
+          };
+        })(),
         upstreamVersion: null,
         forkVersion: null,
         gpu: null,
@@ -1166,10 +1218,27 @@ ipcMain.handle('preflight-stream', async (_event, serial, config) => {
       };
       warnings.push(nativeBundleError);
     }
+    let calibratedProfiles = null;
+    let calibrationTier = null;
+    try {
+      const identification = identifyDevice({ model: deviceModel, displaySize });
+      const found = loadCalibration(identification.device.id, getCalibrationDirectories());
+      if (found) {
+        assertCalibrationMatchesDisplay(found.calibration, displaySize);
+        calibratedProfiles = getCalibratedProfileAvailability(found.calibration);
+        calibrationTier = found.calibration.calibration;
+      }
+    } catch (error) {
+      // A measured headset silently reverting to "uncalibrated" looks like the
+      // wizard did not work, so say what is wrong with the file instead.
+      warnings.push(error.message);
+    }
     return {
       success: true,
       adbState,
       displaySize,
+      calibratedProfiles,
+      calibrationTier,
       productionProfile,
       h264Encoders: encodersResult.success ? filterH264Encoders(encodersResult.stdout.split(/\r?\n/)) : [],
       expectedOutput,
@@ -1229,7 +1298,9 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
       startOperationGate.assertCurrent(operationToken);
       const capabilities = await runCapabilityProbe(nativeRuntime, { runFile });
       startOperationGate.assertCurrent(operationToken);
-      const preflight = buildLockedProfilePreflight({ capabilities, displaySize });
+      const model = await readDeviceModel(request.serial, runtimeConfig);
+      startOperationGate.assertCurrent(operationToken);
+      const preflight = buildLockedProfilePreflight({ capabilities, displaySize, model });
       const selectedProfile = preflight.profiles.find(
         (profile) => profile.id === request.profileId
       );
@@ -1253,6 +1324,9 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
         request,
         capabilities,
         nativeRuntime,
+        mode: 'locked',
+        calibration: null,
+        expectedOutput: null,
         state: createNativeAttemptState(
           generation,
           request.profileId,
@@ -1295,6 +1369,106 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
         success: true,
         ...status,
         expectedOutput: 'Expected stream: 1920x1080 (1080p)'
+      };
+    }
+    if (requestedStreamConfig && isCalibratedProfileId(requestedStreamConfig.profileId)) {
+      const request = normalizeCalibratedStreamRequest(requestedStreamConfig);
+      startOperationGate.assertCurrent(operationToken);
+      const adbDevicesResult = await runFile(runtimeConfig.adbPath, ['devices']);
+      startOperationGate.assertCurrent(operationToken);
+      const adbState = classifyAdbState(adbDevicesResult, request.serial);
+      if (!adbState.available) {
+        throw new Error(adbState.reason);
+      }
+      const displaySize = await getDisplaySize(request.serial, runtimeConfig);
+      startOperationGate.assertCurrent(operationToken);
+      const model = await readDeviceModel(request.serial, runtimeConfig);
+      startOperationGate.assertCurrent(operationToken);
+      const identification = identifyDevice({ model, displaySize });
+      const found = loadCalibration(identification.device.id, getCalibrationDirectories());
+      if (!found) {
+        throw new Error(
+          `${identification.device.name} has no calibration on this machine. `
+          + 'Run the calibration wizard to measure it.');
+      }
+      // The crops are absolute display coordinates, so a calibration measured
+      // on a different geometry frames the wrong region rather than failing.
+      assertCalibrationMatchesDisplay(found.calibration, displaySize);
+      const resolved = resolveCalibratedProfile(found.calibration, request.profileId);
+      if (!resolved.available) {
+        throw new Error(resolved.reason);
+      }
+      // The calibrated path runs stock scrcpy, so it needs the bundled runtime
+      // for the binary and the patched server, but not the capability probe --
+      // there is no fork protocol to negotiate.
+      const nativeRuntime = getVerifiedNativeRuntime();
+      startOperationGate.assertCurrent(operationToken);
+      await requireRetainedChildrenExited();
+      startOperationGate.assertCurrent(operationToken);
+      if (childOwnership.snapshot().primary) replacementStarted = true;
+      cancelCurrentNativeAttempt();
+      await requireRetainedChildrenExited();
+      startOperationGate.assertCurrent(operationToken);
+      const generation = streamSession.begin();
+      startedGeneration = generation;
+      replacementStarted = true;
+      childOwnership.begin(generation);
+      const nativeContext = {
+        generation,
+        operationToken,
+        request,
+        capabilities: { gpu: null },
+        nativeRuntime,
+        mode: 'calibrated',
+        calibration: found.calibration,
+        expectedOutput: resolved.output,
+        state: createNativeAttemptState(
+          generation,
+          request.profileId,
+          { gpu: null, expectedOutput: resolved.output }
+        ),
+        attemptHandle: null,
+        effectiveProfile: request.profileId,
+        published: false,
+        terminal: false,
+        exitSent: false,
+        fallbackInFlight: false
+      };
+      nativeContext.terminationLease = terminationRegistry.createContextLease();
+      nativeContext.terminatingChildren = nativeContext.terminationLease.collection;
+      nativeContext.fallback = createFallbackCoordinator({
+        state: nativeContext.state,
+        cancelReconnect: () => streamSession.cancelReconnect(),
+        onTerminal: (message) => finalizeNativeTerminal(nativeContext, message)
+      });
+      currentNativeContext = nativeContext;
+      registerPendingStart(operationToken, generation, nativeContext);
+      const result = await launchLockedStream(nativeContext);
+      startOperationGate.assertCurrent(operationToken);
+      if (!isNativeContextCurrent(nativeContext) || nativeContext.terminal) {
+        throw new Error('Calibrated stream start was superseded.');
+      }
+      nativeContextAuthority.assertAttemptCompletion({
+        context: nativeContext,
+        attemptRecord: result.attemptRecord,
+        primaryChild: result.primaryChild
+      });
+      result.attemptRecord.published = true;
+      const status = result.status;
+      nativeContext.effectiveProfile = status.effectiveProfile;
+      nativeContext.published = true;
+      lastStreamRequest = { locked: true, context: nativeContext };
+      completePendingStart(operationToken);
+      if (!resolved.angleConfirmed) {
+        sendLog('[System-Warning] This calibration has no confirmed presentation '
+          + 'angle, so the stream is unrotated. Sweep the angle and re-run the '
+          + 'wizard with --angle to confirm it.');
+      }
+      sendStreamStatus(status);
+      return {
+        success: true,
+        ...status,
+        expectedOutput: `Expected stream: ${resolved.output.width}x${resolved.output.height}`
       };
     }
     const safeSerial = validateAdbSerial(requestedStreamConfig && requestedStreamConfig.serial);
@@ -1515,4 +1689,4 @@ ipcMain.handle('check-paths', async (_event, config) => {
 }
 });
 
-module.exports = { parseWmSize, runFile };
+module.exports = { runFile };

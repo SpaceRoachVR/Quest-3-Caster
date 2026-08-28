@@ -267,11 +267,14 @@ test('every patch hunk header matches its actual line counts', () => {
   }
 });
 
-test('the JavaScript profile output map matches profile.c', () => {
+test('the JavaScript profile geometry map matches profile.c', () => {
   // The native client reports each profile's real output size and the renderer
   // validates it. Those numbers live in profile.c and are mirrored in
-  // native-events.js; a change to one and not the other rejects every stream
-  // for that profile at the readiness handshake, which is how 1:1 broke.
+  // locked-profile-geometry.js; a change to one and not the other rejects
+  // every stream for that profile at the readiness handshake, which is how 1:1
+  // broke. Crop, angle and window are mirrored too: they are what the app
+  // tells the user it is doing, and a stale copy is a lie in the UI rather
+  // than a failed handshake, so nothing catches it at runtime.
   const { patchDir, patches } = readPatchSeries();
 
   const declared = new Map();
@@ -294,20 +297,44 @@ test('the JavaScript profile output map matches profile.c', () => {
         declared.set(current, {});
         continue;
       }
-      const size = /^\s*\.output_(width|height)\s*=\s*(\d+)/.exec(body);
-      if (size && current) declared.get(current)[size[1]] = Number(size[2]);
+      const size = /^\s*\.(output|window)_(width|height)\s*=\s*(\d+)/.exec(body);
+      if (size && current) declared.get(current)[`${size[1]}_${size[2]}`] = Number(size[3]);
+      const text = /^\s*\.(server_crop|presentation_angle)\s*=\s*"([^"]+)"/.exec(body);
+      if (text && current) declared.get(current)[text[1]] = text[2];
     }
   }
 
   assert.ok(declared.size > 0, 'profile.c must declare at least one profile');
-  const mirrored = require('../lib/native-events').PROFILE_OUTPUTS;
+  const mirrored = require('../lib/locked-profile-geometry').LOCKED_PROFILE_GEOMETRY;
   assert.deepEqual(
     Object.keys(mirrored).sort(),
     [...declared.keys()].sort(),
-    'native-events.js must list exactly the profiles profile.c defines',
+    'locked-profile-geometry.js must list exactly the profiles profile.c defines',
   );
-  for (const [profile, size] of declared) {
-    assert.deepEqual(mirrored[profile], size,
-      `${profile}: profile.c declares ${size.width}x${size.height}`);
+  for (const [profile, native] of declared) {
+    assert.deepEqual(
+      mirrored[profile].output,
+      { width: native.output_width, height: native.output_height },
+      `${profile}: profile.c delivers ${native.output_width}x${native.output_height}`);
+    assert.deepEqual(
+      mirrored[profile].window,
+      { width: native.window_width, height: native.window_height },
+      `${profile}: profile.c sizes the window ${native.window_width}x${native.window_height}`);
+    assert.equal(mirrored[profile].serverCrop, native.server_crop,
+      `${profile}: profile.c crops ${native.server_crop}`);
+    assert.equal(mirrored[profile].presentationAngle, native.presentation_angle,
+      `${profile}: profile.c rotates by ${native.presentation_angle}`);
+  }
+});
+
+test('every profile sizes its window to its delivered output', () => {
+  // SDL scales the decoded frame to the window and OBS captures the window, so
+  // a window wider than the output resamples the image on the way out -- after
+  // the crops were chosen specifically to avoid resampling. Low Latency
+  // shipped 1792x1008 into a 1920x1080 window and lost that property silently.
+  const { LOCKED_PROFILE_GEOMETRY } = require('../lib/locked-profile-geometry');
+  for (const [profile, geometry] of Object.entries(LOCKED_PROFILE_GEOMETRY)) {
+    assert.deepEqual(geometry.window, geometry.output,
+      `${profile}: window must equal output`);
   }
 });

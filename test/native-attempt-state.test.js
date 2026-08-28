@@ -88,6 +88,24 @@ test('stale fallback events are harmless and terminal fallback blocks reconnect'
   assert.equal(state.requestFallback(first.token, 'late duplicate'), 'terminal');
 });
 
+test('Low Latency attempts require their locked 1792x1008 ready event', () => {
+  // getExpectedOutput used to answer 1920x1080 for every non-square profile,
+  // which is the size Low Latency delivered before its crop moved to
+  // 1792x1008. Only native-events.js was updated, so this validator would have
+  // rejected a correct ready event the moment anything wired it up.
+  const state = createNativeAttemptState(16, 'obsLowLatency1080p60');
+  const attempt = state.beginAttempt('obsLowLatency1080p60');
+  const ready = {
+    effectiveProfile: 'obsLowLatency1080p60',
+    output: { width: 1792, height: 1008 }, stabilization: { active: false },
+    gpu: null, nominalDelayMs: 0, generation: 16,
+  };
+  assert.equal(state.validateReady(attempt.token, ready), true);
+  assert.throws(() => state.validateReady(attempt.token, {
+    ...ready, output: { width: 1920, height: 1080 },
+  }));
+});
+
 test('square-eye attempts require their locked 1080x1080 ready event', () => {
   const state = createNativeAttemptState(15, 'obsLowLatencySquareLeft1080p60');
   const attempt = state.beginAttempt('obsLowLatencySquareLeft1080p60');

@@ -138,7 +138,11 @@ test_profiles_and_events(struct test_results *results) {
     VERIFY(results, low && !low->stabilized);
     VERIFY(results, !strcmp(low->server_crop, "1792:1008:2200:600"));
     VERIFY(results, low->video_bit_rate == 40000000 && low->max_fps == 60);
-    VERIFY(results, low->window_width == 1920 && low->window_height == 1080);
+    // The window must match the delivered size. SDL scales the decoded frame
+    // to the window, and OBS captures the window, so a window larger than the
+    // output resamples the image after the pipeline deliberately avoided
+    // resampling anywhere else.
+    VERIFY(results, low->window_width == 1792 && low->window_height == 1008);
     VERIFY(results, low->audio_delay_ms == 0);
     VERIFY(results, !strcmp(low->presentation_angle, "-22"));
 
@@ -169,6 +173,16 @@ test_profiles_and_events(struct test_results *results) {
            !strcmp(square_right->server_crop, "1488:1488:2352:360"));
     VERIFY(results, square_right->window_width == 1080
            && square_right->window_height == 1080);
+
+    // Guard the invariant for every profile, including ones added later: a
+    // window that differs from the delivered size silently rescales the image
+    // in SDL before OBS ever sees it.
+    const struct q3c_profile *const all[] = {low, stable, square_left,
+                                             square_right};
+    for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); ++i) {
+        VERIFY(results, all[i]->window_width == all[i]->output_width
+               && all[i]->window_height == all[i]->output_height);
+    }
     VERIFY(results, !q3c_profile_parse("unknown", &id));
 
     uint64_t generation;

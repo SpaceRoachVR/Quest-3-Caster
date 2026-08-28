@@ -118,7 +118,7 @@
     },
     {
       "path": "q3c-native-tests.exe",
-      "sha256": "72a577824f8798e171e0726f25f9faa3386f490a3e4880e87ae9336bdeb26c74",
+      "sha256": "5fa238cd38e27a481ce129f3e63176bb1c66e0344c67302bb7efe9c4d5c64d96",
       "role": "native-unit-tests"
     },
     {
@@ -138,7 +138,7 @@
     },
     {
       "path": "scrcpy.exe",
-      "sha256": "c3bbaf7fbf464001eb9e4f63f8ac015447f72b5356838718ad1c8c858076fca8",
+      "sha256": "123b97e78a0ddce3ac18503ce07645d70b80d7a85e2ccbbd02ff819deb05e373",
       "role": "client"
     },
     {

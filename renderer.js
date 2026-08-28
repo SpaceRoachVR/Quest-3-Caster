@@ -48,7 +48,10 @@ const state = {
   streamGeneration: null,
   isCasting: false,
   isProximityBypassed: false,
-  activeStreamOwnership: null
+  activeStreamOwnership: null,
+  // Which profile the last preflight settled on, and whether it came from a
+  // calibration. Set by runPreflight, consumed when the stream is started.
+  resolvedProfile: null
 };
 
 function setMessage(element, message, isError = false) {
@@ -186,18 +189,32 @@ function commitVolume(kind, apply) {
 
 async function applyStoredVolumes() {
   if (!state.isCasting) return;
-  await window.api.setGameVolume(readVolume(elements.gameVolume.value));
-  if (elements.microphone.checked) {
-    await window.api.setMicVolume(readVolume(elements.micVolume.value));
+  const gameResult = await window.api.setGameVolume(readVolume(elements.gameVolume.value));
+  if (!gameResult?.success) {
+    setMessage(elements.volumeNote, gameResult?.error || 'Could not apply the saved game volume.', true);
+    return;
   }
+  if (elements.microphone.checked) {
+    const micResult = await window.api.setMicVolume(readVolume(elements.micVolume.value));
+    if (!micResult?.success) {
+      setMessage(elements.volumeNote, micResult?.error || 'Could not apply the saved microphone volume.', true);
+      return;
+    }
+  }
+  setMessage(elements.volumeNote, 'Levels are saved and applied to the Windows volume mixer while casting.');
 }
 
+// Returns an error string when the sensor could not be restored, or '' on
+// success/no-op, so callers can fold the warning into their own status message
+// instead of it vanishing silently.
 async function restoreProximitySensor() {
-  if (!state.isProximityBypassed || !state.currentSerial) return;
+  if (!state.isProximityBypassed || !state.currentSerial) return '';
   const result = await window.api.toggleProximitySensor(state.currentSerial, false, getRuntimeConfig());
   if (result.success) {
     state.isProximityBypassed = false;
+    return '';
   }
+  return result.error || 'Could not restore the headset proximity sensor.';
 }
 
 async function runPreflight(serial) {
@@ -206,17 +223,24 @@ async function runPreflight(serial) {
     setAvailability(result.error || 'This headset is not ready to cast.', 'error');
     return null;
   }
-  const availability = rendererQuality.getProfileAvailability(result);
-  const lockedProfileId = rendererQuality.getLockedProfileId(
-    state.selectedProfile,
-    state.outputFormat,
-    elements.rightEye.checked
-  );
-  const selected = availability[lockedProfileId];
-  if (!selected?.available) {
-    setAvailability(selected?.reason || 'The selected casting profile is unavailable.', 'error');
+  // A headset with a calibration streams from it; one without falls through to
+  // the locked profiles, which only fit the headset their crops were measured
+  // on. The framing controls mean the same thing either way, so nothing about
+  // this choice is exposed to the user beyond the note below.
+  const resolved = rendererQuality.resolveStreamProfile({
+    profileId: state.selectedProfile,
+    outputFormat: state.outputFormat,
+    rightEye: elements.rightEye.checked,
+    preflight: result
+  });
+  if (!resolved.availability?.available) {
+    setAvailability(
+      resolved.availability?.reason || 'The selected casting profile is unavailable.',
+      'error'
+    );
     return null;
   }
+  state.resolvedProfile = resolved;
   return result;
 }
 
@@ -246,12 +270,16 @@ async function connectAndStart() {
     elements.startCast.disabled = false;
     return;
   }
-  const request = rendererQuality.buildStreamPayload(state.selectedProfile, {
+  const request = rendererQuality.buildResolvedStreamPayload(state.resolvedProfile, {
     serial: state.currentSerial,
     streamMic: elements.microphone.checked,
     outputFormat: state.outputFormat,
     rightEye: elements.rightEye.checked
   });
+  const calibratedNote = rendererQuality.getCalibratedNote(state.resolvedProfile);
+  if (calibratedNote) {
+    elements.profileNote.textContent = calibratedNote;
+  }
   setAvailability('Starting cast\u2026', 'connecting');
   const stream = await window.api.startStream(request, getRuntimeConfig());
   if (!stream.success) {
@@ -281,8 +309,11 @@ async function stopCasting() {
     elements.startCast.disabled = false;
     return;
   }
-  await restoreProximitySensor();
-  returnToReadyState('Ready to cast.');
+  const proximityWarning = await restoreProximitySensor();
+  returnToReadyState(
+    proximityWarning ? `Ready to cast. ${proximityWarning}` : 'Ready to cast.',
+    proximityWarning ? 'warning' : 'ready'
+  );
 }
 
 async function scanUsbDevices() {
@@ -436,18 +467,27 @@ window.api.onStreamExit(async (payload) => {
     });
     if (guardedReconnect.accepted && guardedReconnect.result?.scheduled) return;
   }
-  await restoreProximitySensor();
-  returnToReadyState('The cast ended. Start casting to reconnect.', 'warning');
+  const proximityWarning = await restoreProximitySensor();
+  returnToReadyState(
+    proximityWarning
+      ? `The cast ended. Start casting to reconnect. ${proximityWarning}`
+      : 'The cast ended. Start casting to reconnect.',
+    'warning'
+  );
 });
 
 window.api.onStreamStatus((status) => {
   if (status?.generation !== state.streamGeneration) return;
-  const expectedProfile = rendererQuality.getLockedProfileId(
-    state.selectedProfile,
-    state.outputFormat,
-    elements.rightEye.checked
-  );
-  if (status.effectiveProfile && status.effectiveProfile !== expectedProfile) {
+  const expectedProfile = state.resolvedProfile?.profileId
+    || rendererQuality.getLockedProfileId(
+      state.selectedProfile,
+      state.outputFormat,
+      elements.rightEye.checked
+    );
+  // Only the locked path can substitute a profile mid-start; a calibrated
+  // stream has nothing to fall back to, so a mismatch there is not that.
+  if (!state.resolvedProfile?.calibrated
+      && status.effectiveProfile && status.effectiveProfile !== expectedProfile) {
     setAvailability('Stabilized could not start; Low Latency is active.', 'ready');
   }
 });

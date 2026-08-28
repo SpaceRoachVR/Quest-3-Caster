@@ -43,18 +43,39 @@ test('capability parsing and preflight return exact ordered availability', () =>
   assert.equal(result.profiles[1].maximumDelayMs, 120);
   assert.equal(result.profiles[1].gpu, capability.gpu);
   assert.deepEqual(result.profiles[2].output, { width: 1080, height: 1080 });
+  assert.deepEqual(result.profiles[0].output, { width: 1792, height: 1008 });
   assert.equal(result.geometry.calibrationVerified, false);
+  assert.equal(result.device.id, 'quest3');
+  assert.equal(result.device.calibration, 'measured');
+  assert.equal(result.device.matchedBy, 'display');
 });
 
 test('geometry and GPU disable profiles with exact actionable reasons', () => {
+  // 3664x1920 is a real headset -- Quest 3S or Quest 2, which share a panel --
+  // so the reason names it and points at the calibration wizard. The old
+  // message demanded the display be 4128x2208, which is not a resolution this
+  // hardware has and not an action anyone could take.
   const geometry = buildLockedProfilePreflight({
     capabilities: capability,
     displaySize: { width: 3664, height: 1920 },
   });
   assert.equal(geometry.profiles[0].available, false);
-  assert.match(geometry.profiles[0].reason, /4128x2208/);
+  assert.match(geometry.profiles[0].reason, /Quest 3S or Meta Quest 2/);
+  assert.match(geometry.profiles[0].reason, /calibration wizard/);
+  assert.doesNotMatch(geometry.profiles[0].reason, /4128x2208/);
   assert.equal(geometry.profiles[1].available, false);
   assert.equal(geometry.profiles[2].available, false);
+
+  const named = buildLockedProfilePreflight({
+    capabilities: capability,
+    model: 'Quest 3S',
+    displaySize: { width: 3664, height: 1920 },
+  });
+  assert.equal(named.device.id, 'quest3s');
+  assert.equal(named.device.name, 'Meta Quest 3S');
+  assert.equal(named.device.calibration, 'uncalibrated');
+  assert.equal(named.device.matchedBy, 'model');
+  assert.match(named.profiles[0].reason, /Meta Quest 3S is recognized but not calibrated/);
 
   const noGpu = buildLockedProfilePreflight({
     capabilities: { ...capability, openclAvailable: false, gpu: null },

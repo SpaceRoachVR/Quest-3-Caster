@@ -39,6 +39,35 @@ function ConvertTo-WslPath {
     return $converted.Trim()
 }
 
+# Only ever stop-process a scrcpy/adb whose executable lives under one of
+# this project's own directories. Matching by name alone would also kill an
+# unrelated adb/scrcpy a developer has running for other work (e.g. Android
+# Studio's own adb server).
+function Test-IsProjectOwnedProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.Process] $Process,
+        [Parameter(Mandatory = $true)]
+        [string[]] $AllowedRoots
+    )
+
+    $processPath = $null
+    try {
+        $processPath = $Process.Path
+    } catch {
+        return $false
+    }
+    if ([string]::IsNullOrWhiteSpace($processPath)) {
+        return $false
+    }
+    foreach ($root in $AllowedRoots) {
+        if ($processPath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw 'The native client build requires 64-bit Windows.'
 }
@@ -56,14 +85,20 @@ foreach ($requiredCommand in @('git.exe', 'node.exe', 'wsl.exe')) {
 # A running adb server keeps adb.exe and its DLLs open, and the staging step
 # clears the bundle directory before copying. Windows refuses to delete a
 # mapped executable, so the build fails part-way and leaves the bundle
-# unusable. Stop the server (and any scrcpy holding it) before staging.
+# unusable. Stop the server (and any scrcpy holding it) before staging --
+# but only ones this project launched, identified by their executable path.
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$lockingProcessRoots = @(
+    [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'resources\native\win32-x64')),
+    [IO.Path]::GetFullPath((Join-Path $repositoryRoot '.native-cache'))
+)
 foreach ($lockingProcess in @('scrcpy', 'adb')) {
     Get-Process -Name $lockingProcess -ErrorAction SilentlyContinue |
+        Where-Object { Test-IsProjectOwnedProcess -Process $_ -AllowedRoots $lockingProcessRoots } |
         Stop-Process -Force -ErrorAction SilentlyContinue
 }
 Start-Sleep -Milliseconds 500
 
-$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $dependencyManifestPath = Join-Path $repositoryRoot 'native\dependencies.json'
 $dependencyManifest = Get-Content -LiteralPath $dependencyManifestPath -Raw |
     ConvertFrom-Json

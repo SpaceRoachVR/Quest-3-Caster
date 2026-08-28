@@ -12,11 +12,68 @@ Quest 3 Caster is a Windows Electron application for dependable Meta Quest 3 cas
 
 ## Headset compatibility
 
-**Quest 3 only. Quest 3S support is planned.**
+**Quest 3 ships calibrated. Other headsets can be calibrated with the wizard.**
 
-The capture profiles are calibrated against the Quest 3's specific 4128x2208 display: the crops are derived from that panel's lens mask, and the rotation correction from its panel cant. Preflight checks the display geometry and refuses to start on anything else rather than producing a mis-framed or tilted cast.
+The capture profiles are calibrated against a specific panel: the crops come from that panel's lens mask, and the rotation correction from its panel cant. A headset the app has never measured cannot borrow another one's crops without mis-framing the cast, so preflight reports calibration status per device rather than assuming one display size.
 
-A Quest 3S has different panel and lens geometry, so it needs its own measured crops and angles. That calibration is planned and will be measured on hardware, not estimated. Quest 2 and Quest Pro are not currently on the roadmap.
+`lib/device-registry.js` records what is known about each headset and how it came to be known:
+
+| Tier | Meaning |
+| --- | --- |
+| `measured` | Crops and angle came off real hardware. Selectable by default. |
+| `provisional` | Derived, or measured but not physically confirmed. Offered and labelled, never the default. |
+| `uncalibrated` | Nothing measured. Framing is not claimed to be correct. |
+
+| Headset | Display | Status |
+| --- | --- | --- |
+| Meta Quest 3 | 4128x2208 | `measured` |
+| Meta Quest 3S | 3664x1920 | `uncalibrated` — run the wizard |
+| Meta Quest 2 | 3664x1920 | `uncalibrated` — run the wizard |
+| Meta Quest Pro | 3600x1920 | `uncalibrated`, not on the roadmap |
+
+Quest 2 and Quest 3S report the same display size, so geometry alone cannot tell them apart; preflight reads `ro.product.model` and falls back to geometry only when the model is unknown.
+
+## Calibrating a headset
+
+The wizard runs the same procedure the Quest 3 profiles were built from -- capture a frame, flood-fill the lens mask out of it, measure the largest mask-free crop -- against whatever headset is plugged in. Being per-unit rather than per-model, it is also better data than a shipped table.
+
+Put the headset on the Quest home menu with the display awake, then:
+
+```powershell
+npm run calibrate -- --serial <serial>
+```
+
+It prints the mask fraction and the largest mask-free 16:9 and 1:1 crop for each eye, and writes `calibration/<device>.json`.
+
+That result is **provisional**, and deliberately so. The lens mask can be derived from a still frame; the panel cant cannot. Deriving a horizon from one barrel-distorted frame would produce a confident answer that silently tilts every cast, so the wizard leaves the angle unmeasured and tells you how to sweep it. Use the right-eye crop it printed and judge against the Quest menu, which is roll-locked to gravity and therefore a valid horizontal reference:
+
+```powershell
+scrcpy -s <serial> --crop <crop> --angle -22
+```
+
+Calibrate against the centre of frame -- the source is barrel-distorted, so no single angle levels every region at once. Then record the angle you settled on, which promotes the file to `measured`:
+
+```powershell
+npm run calibrate -- --serial <serial> --angle <degrees>
+```
+
+A saved frame can be analysed without a headset attached, which is how a calibration can be reviewed or reproduced later:
+
+```powershell
+npm run calibrate -- --frame capture.png --model "Quest 3S"
+```
+
+Calibrations are searched for in the app's user data directory first and the repository's `calibration/` directory second, so your own measurement of your own headset always outranks anything shipped.
+
+## How a calibrated headset streams
+
+A calibrated headset does not use the locked native profiles. Those carry their crops inside `profile.c`, so they only fit the headset those crops were measured on; a calibrated device supplies its own crop and angle and drives upstream scrcpy's `--crop` and `--angle` instead. Supporting a headset is then a matter of measuring it rather than rebuilding the native runtime.
+
+The framing controls mean the same thing on both paths — 16:9 or 1:1, and which eye — so there is nothing extra to choose. Preflight decides which path applies based on whether a calibration exists, and the app says which one it used.
+
+What the calibrated path gives up is the fork's own event protocol: no stabilization, and no single fallback to Low Latency, because there is no second profile to fall back to. What it does not give up is the rule that a stream is never reported active until its geometry is confirmed. Upstream scrcpy prints `INFO: Texture: <width>x<height>` once it has decoded a frame and sized its texture, and the app matches that against the measured crop before reporting the stream live — the same guarantee the native ready event provides, from a different signal. If the delivered geometry ever stops matching the calibration mid-stream, that is fatal rather than a warning.
+
+A provisional calibration streams unrotated and says so in the profile note, because an unmeasured angle is not a reason to refuse to cast — only a reason not to claim the framing is confirmed.
 
 ## System requirements
 

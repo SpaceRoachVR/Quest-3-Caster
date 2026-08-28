@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-28T20:37:54.813Z",
+  "calibration": "measured",
+  "device": {
+    "id": "quest3s",
+    "model": "Quest 3S",
+    "display": {
+      "width": 3664,
+      "height": 1920
+    },
+    "eye": {
+      "width": 1832,
+      "height": 1920
+    }
+  },
+  "mask": {
+    "maskedFraction": 0.15984096388282387
+  },
+  "profiles": {
+    "widescreenLeft": {
+      "crop": "1680:946:62:456",
+      "eye": "left",
+      "angleDegrees": 0,
+      "output": {
+        "width": 1680,
+        "height": 946
+      },
+      "maskIntrusionFraction": 0,
+      "eyeCoverage": 0.9170305676855895,
+      "rotatedSample": {
+        "width": 1680,
+        "height": 946
+      }
+    },
+    "widescreenRight": {
+      "crop": "1674:942:1930:456",
+      "eye": "right",
+      "angleDegrees": 0,
+      "output": {
+        "width": 1674,
+        "height": 942
+      },
+      "maskIntrusionFraction": 0,
+      "eyeCoverage": 0.9137554585152838,
+      "rotatedSample": {
+        "width": 1674,
+        "height": 942
+      }
+    },
+    "squareLeft": {
+      "crop": "1446:1446:180:206",
+      "eye": "left",
+      "angleDegrees": 0,
+      "output": {
+        "width": 1446,
+        "height": 1446
+      },
+      "maskIntrusionFraction": 0,
+      "eyeCoverage": 0.7893013100436681,
+      "rotatedSample": {
+        "width": 1446,
+        "height": 1446
+      }
+    },
+    "squareRight": {
+      "crop": "1472:1472:2032:190",
+      "eye": "right",
+      "angleDegrees": 0,
+      "output": {
+        "width": 1472,
+        "height": 1472
+      },
+      "maskIntrusionFraction": 0,
+      "eyeCoverage": 0.8034934497816594,
+      "rotatedSample": {
+        "width": 1472,
+        "height": 1472
+      }
+    }
+  },
+  "angleSweep": [],
+  "notes": null
+}
