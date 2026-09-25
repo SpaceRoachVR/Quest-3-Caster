@@ -22,6 +22,18 @@ Quest 3 and Quest 3S are calibrated and work out of the box. Other headsets can 
 | Meta Quest 2 | Needs a one-time calibration (see below) |
 | Meta Quest Pro | Needs a one-time calibration; untested |
 
+Where each feature stands:
+
+| Feature | Quest 3 | Quest 3S | Calibrated headsets (Quest 2 / Pro) |
+| --- | --- | --- | --- |
+| 16:9 and 1:1 single-eye casting | Yes | Yes | Yes, from your calibration |
+| Low Latency | Yes | Only mode | Only mode |
+| Stabilized (needs OpenCL) | Yes | No | No |
+| Game audio and separate microphone | Yes | Yes | Yes |
+| Refresh-rate check (see below) | Yes | Yes | Yes |
+
+The app runs on 64-bit Windows 10 or 11 on x64. On Windows on ARM it runs under x64 emulation and has not been tested; Stabilized will be reported as unavailable there because no OpenCL device is exposed to emulated processes. macOS and Linux are not supported.
+
 Casting a VR headset is not just screen mirroring. The headset renders two eyes side by side, each one seen through a lens that blacks out the corners, and the picture is tilted to match how the panels sit. To get a clean, level, single-eye image out of that, the app needs to know the exact shape of *your* headset's display.
 
 Quest 3 and Quest 3S have both been measured, so they simply work. Anything else needs to be measured once, which takes about a minute.
@@ -92,6 +104,7 @@ Stabilized smooths small head shake and is Quest 3 only. It needs a GPU with Ope
 Notes on the ones that actually matter:
 
 - **Wi-Fi is the usual bottleneck.** The stream is H.264 at 40 Mbps. 2.4 GHz will not carry it reliably. Putting the PC on Ethernet and reserving 5 GHz (or 6 GHz) for the headset gives the most stable result.
+- **Set the headset to 120 Hz for smooth motion.** The cast is 60 FPS, and only a display rate that divides evenly by 60 keeps the cadence steady. At the Quest's usual 72 or 90 Hz, one frame in every few is dropped and pans look juddery even when the bitrate is perfect. Headset Settings → System → Display → 120 Hz fixes it for the home menu and most apps; a game that forces its own refresh rate still overrides it. The app reads the current rate when you start casting and warns on the status line if it is not a clean multiple of 60.
 - **OpenCL is only needed for Stabilized**, which is a Quest 3 profile. Everything else needs no GPU compute. If preflight finds no usable OpenCL device, Stabilized is offered as unavailable and the rest remains fully functional.
 - **Developer Mode is enabled in the Meta Horizon phone app**, not in the headset. Devices → your headset → Headset Settings → Developer Mode.
 - **OBS Studio** is not required to run the app, but is the intended capture target.
@@ -130,7 +143,7 @@ npm start
 1. Connect the headset by USB and accept the USB debugging prompt in the headset.
 2. Click **Scan USB devices** in the app and select your headset.
 3. Quest 3 Caster detects the local IP, enables legacy ADB TCP/IP on port 5555, and confirms readiness. The USB cable may be removed once the IP is shown.
-4. Click **Start casting**. The app connects wirelessly, runs a capability preflight, and launches scrcpy.
+4. Click **Start casting**. The app connects wirelessly, runs a capability preflight, and launches scrcpy. The preflight also reads the headset's display refresh rate; if it is not 60 or 120 Hz, the status line says so and the log records it. Casting proceeds either way.
 5. Quest 3 Caster does not use Android's pairing-code workflow or Meta Horizon Link Auto-Connect because neither exposes an ADB connection the app can use.
 6. USB setup is required again after every headset restart because legacy ADB TCP/IP does not survive a reboot.
 7. On a Quest 3, use **Low Latency** for responsive gameplay, and choose **Stabilized** only when the GPU and display preflight succeeds and its added delay is acceptable. On a calibrated headset there is one profile per framing and nothing further to pick.

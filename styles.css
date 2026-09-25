@@ -21,7 +21,7 @@ h2 { margin: 0; font-size: 18px; }
 .lead { margin: 12px 0 0; color: #aeb8c8; font-size: 16px; line-height: 1.55; max-width: 610px; }
 .usb-section { margin: 22px 0 28px; }
 .availability { min-height: 22px; color: #aeb8c8; font-size: 14px; margin-bottom: 20px; }
-.availability[data-tone="ready"] { color: #56d486; }.availability[data-tone="error"], .form-message.error { color: #ff8a91; }.availability[data-tone="connecting"] { color: #86b3ff; }
+.availability[data-tone="ready"] { color: #56d486; }.availability[data-tone="error"], .form-message.error { color: #ff8a91; }.availability[data-tone="connecting"] { color: #86b3ff; }.availability[data-tone="warning"] { color: #f0c35a; }
 .primary-button, .secondary-button, .compact-button { border-radius: 8px; border: 1px solid transparent; min-height: 46px; padding: 0 18px; font-weight: 700; }
 .primary-button { width: 100%; background: #2878f0; color: white; }.primary-button:hover:not(:disabled) { background: #4088f4; }.primary-button:disabled { opacity: .5; cursor: not-allowed; }
 .secondary-button, .compact-button { background: #202936; color: #f5f7fb; border-color: #344052; }.secondary-button:hover, .compact-button:hover { border-color: #6e9eec; background: #273244; }

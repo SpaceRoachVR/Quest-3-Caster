@@ -134,3 +134,11 @@ test('uses the selected dark consumer workspace visual system without gradients'
   assert.doesNotMatch(styles, /linear-gradient|radial-gradient/);
   assert.doesNotMatch(styles, /saved-device-row|modal-backdrop/);
 });
+
+test('the refresh-rate warning reaches the active status line without blocking the cast', () => {
+  // A 72 or 90 Hz headset drops frames unevenly into a 60 FPS cast. The
+  // preflight reads the rate and the renderer folds the warning into the
+  // "Casting is active." line, which needs a visible warning tone.
+  assert.match(renderer, /preflight\.refreshRateWarning/);
+  assert.match(styles, /\.availability\[data-tone="warning"\]/);
+});

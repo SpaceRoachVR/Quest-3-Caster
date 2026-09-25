@@ -51,6 +51,7 @@ const {
   loadCalibration
 } = require('./lib/calibration-store');
 const { describeDisplayOverride, parseWmSizes } = require('./lib/display-geometry');
+const { describeRefreshRate, parseRefreshRateHz } = require('./lib/display-refresh');
 const { connectWirelessTarget } = require('./lib/wireless-adb');
 const {
   buildLockedProfilePreflight,
@@ -431,6 +432,22 @@ async function readDisplayGeometry(serial, runtimeConfig) {
 
 async function getDisplaySize(serial, runtimeConfig) {
   return (await readDisplayGeometry(serial, runtimeConfig)).displaySize;
+}
+
+// Best-effort: a headset that will not answer, or a dump in a shape the parser
+// does not know, yields null and the cast proceeds without the cadence warning.
+// `dumpsys display` runs well past runFile's default 64 KiB buffer.
+async function readDisplayRefreshRate(serial, runtimeConfig) {
+  try {
+    const result = await runFile(
+      runtimeConfig.adbPath,
+      ['-s', serial, 'shell', 'dumpsys', 'display'],
+      { timeoutMs: 10000, maxBuffer: 4 * 1024 * 1024 }
+    );
+    return result.success ? parseRefreshRateHz(result.stdout) : null;
+  } catch (_error) {
+    return null;
+  }
 }
 
 // Two headsets share a panel resolution, so geometry alone cannot name the
@@ -1153,6 +1170,14 @@ ipcMain.handle('preflight-stream', async (_event, serial, config) => {
     const displaySize = displayGeometry.displaySize;
     const deviceModel = await readDeviceModel(safeSerial, runtimeConfig);
     const displayOverrideWarning = describeDisplayOverride(displayGeometry);
+    const refreshRateHz = await readDisplayRefreshRate(safeSerial, runtimeConfig);
+    const refreshRateWarning = describeRefreshRate(refreshRateHz);
+    sendLog(refreshRateHz === null
+      ? '[System] Headset display refresh rate could not be read.'
+      : `[System] Headset display refresh rate: ${refreshRateHz} Hz (cast is 60 FPS).`);
+    if (refreshRateWarning) {
+      sendLog(`[System-Warning] ${refreshRateWarning}`);
+    }
     const productionProfile = getProductionProfile(displaySize);
     const expectedOutput = productionProfile
       ? formatOutputEstimate(calculateOutputSize(parseCrop(productionProfile.crop), productionProfile.maxSize, 2))
@@ -1237,6 +1262,8 @@ ipcMain.handle('preflight-stream', async (_event, serial, config) => {
       success: true,
       adbState,
       displaySize,
+      refreshRateHz,
+      refreshRateWarning,
       calibratedProfiles,
       calibrationTier,
       productionProfile,

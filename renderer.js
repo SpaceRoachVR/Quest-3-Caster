@@ -297,7 +297,13 @@ async function connectAndStart() {
   elements.connectionStatus.textContent = 'Casting';
   elements.startCast.disabled = false;
   elements.startCast.textContent = 'Stop casting';
-  setAvailability(keepAwakeWarning ? `Casting is active. ${keepAwakeWarning}` : 'Casting is active.', keepAwakeWarning ? 'warning' : 'ready');
+  // The refresh-rate warning is advisory: the cast runs either way, so it
+  // shares the active line rather than blocking the start.
+  const castWarnings = [keepAwakeWarning, preflight.refreshRateWarning].filter(Boolean);
+  setAvailability(
+    castWarnings.length > 0 ? `Casting is active. ${castWarnings.join(' ')}` : 'Casting is active.',
+    castWarnings.length > 0 ? 'warning' : 'ready'
+  );
   await applyStoredVolumes();
 }
 
