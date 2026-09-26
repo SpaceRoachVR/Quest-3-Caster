@@ -1,6 +1,6 @@
 {
   "name": "quest-3-caster",
-  "version": "1.0.0-beta.5",
+  "version": "1.0.0-beta.6",
   "description": "Wireless Quest 3 cast management app via ADB and scrcpy",
   "main": "main.js",
   "scripts": {

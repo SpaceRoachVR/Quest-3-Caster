@@ -52,6 +52,7 @@ test('rejects an endpoint that remains offline after stale-transport recovery', 
 
   assert.deepEqual(result, {
     success: false,
+    code: 'device_offline',
     error: 'ADB device 192.168.1.77:5555 is offline.',
     recoveredStaleTransport: true,
   });
@@ -85,7 +86,21 @@ test('reports a refused legacy TCP/IP connection with the required recovery acti
   });
 
   assert.equal(result.success, false);
+  assert.equal(result.code, 'connection_refused');
   assert.match(result.error, /Reconnect the headset by USB/i);
   assert.match(result.error, /port 5555/i);
   assert.match(result.diagnostic, /actively refused/i);
+});
+
+test('reports an endpoint that needs approval again after adb tcpip restarted the headset ADB service', async () => {
+  const result = await connectWirelessTarget({
+    target: '192.168.1.77:5555',
+    runAdb: async (args) => args[0] === 'connect'
+      ? adbResult('failed to authenticate to 192.168.1.77:5555\n')
+      : adbResult('List of devices attached\n2G0YC1ZFCK04Q7\tunauthorized\n192.168.1.77:5555\tunauthorized\n'),
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, 'device_unauthorized');
+  assert.match(result.error, /Always allow from this computer/);
 });
