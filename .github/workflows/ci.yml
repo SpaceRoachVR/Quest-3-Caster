@@ -52,7 +52,13 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
-      - run: npm run native:verify
+      # Hosted Windows runners have no OpenCL GPU, so the capability probe
+      # reports stabilization unavailable and the native unit tests and the
+      # synthetic probe cannot run. This mode still verifies every hash, the
+      # client, the libavfilter link, forced-failure cleanup and the CLI
+      # parser; the GPU-bound checks remain part of release verification on a
+      # machine with a GPU.
+      - run: npm run native:verify -- --allow-missing-gpu
 
   package:
     name: Package installer

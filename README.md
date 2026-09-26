@@ -174,6 +174,12 @@ Run this before relying on a native bundle update:
 npm run native:verify
 ```
 
+On a machine with no OpenCL GPU, such as a hosted CI runner, add
+`-- --allow-missing-gpu`. That still checks every file hash, the client, the
+libavfilter link, forced-failure cleanup and the CLI parser, but skips the
+native unit tests and the synthetic stabilization probe because both need a
+live OpenCL filter. Release verification runs without the flag on a GPU.
+
 ## Audio
 
 Game audio and the headset microphone arrive in OBS as **two separate sources**, so you can mix them, duck one under the other, or drop the mic entirely without touching the game.
