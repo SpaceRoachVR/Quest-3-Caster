@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { readHeadsetIp } = require('../lib/usb-setup');
+const { enableLegacyTcpIp, isListeningOnLegacyPort, readHeadsetIp } = require('../lib/usb-setup');
 
 const SERIAL = '2G0YC1ZFCK04Q7';
 
@@ -101,5 +101,70 @@ test('keeps the ADB diagnostic when a command fails on a still-authorized headse
 test('rejects an invalid serial before running ADB', async () => {
   const { calls, runAdb } = fakeAdb({});
   await assert.rejects(readHeadsetIp({ serial: 'bad serial; rm', runAdb }));
+  assert.deepEqual(calls, []);
+});
+
+const LISTENING_5555 = [
+  '  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+  '   0: 00000000000000000000000000000000:15B3 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  2000        0 88109 1 0000000000000000 99 0 0 10 0',
+  '   4: 0000000000000000FFFF00004D01A8C0:15B3 0000000000000000FFFF00004901A8C0:CE49 01 00000000:00000000 00:00000000 00000000  2000        0 88110 1 0000000000000000 20 3 30 10 -1',
+].join('\n');
+
+test('detects a socket listening on port 5555 and ignores established or other ports', () => {
+  assert.equal(isListeningOnLegacyPort(LISTENING_5555), true);
+  assert.equal(isListeningOnLegacyPort(LISTENING_5555.split('\n').filter((line) => !line.includes(' 0A ')).join('\n')), false);
+  assert.equal(isListeningOnLegacyPort('   0: 00000000:15B4 00000000:0000 0A 00000000:00000000'), false);
+  assert.equal(isListeningOnLegacyPort(''), false);
+});
+
+test('leaves the headset ADB service alone when port 5555 is already listening', async () => {
+  const calls = [];
+  const result = await enableLegacyTcpIp({
+    serial: SERIAL,
+    runAdb: async (args) => {
+      calls.push(args);
+      return adbResult(LISTENING_5555);
+    },
+  });
+
+  assert.deepEqual(result, { success: true, alreadyListening: true });
+  assert.deepEqual(calls, [['-s', SERIAL, 'shell', 'cat', '/proc/net/tcp6', '/proc/net/tcp']]);
+});
+
+test('enables legacy TCP/IP when port 5555 is not listening, even if one proc file is missing', async () => {
+  const calls = [];
+  const result = await enableLegacyTcpIp({
+    serial: SERIAL,
+    runAdb: async (args) => {
+      calls.push(args);
+      if (args[2] === 'shell') {
+        return { success: false, stdout: '   0: 00000000:13AD 00000000:0000 0A', stderr: 'cat: /proc/net/tcp6: No such file', error: 'Command failed' };
+      }
+      return adbResult('restarting in TCP mode port: 5555\n');
+    },
+  });
+
+  assert.deepEqual(result, { success: true, alreadyListening: false });
+  assert.deepEqual(calls[1], ['-s', SERIAL, 'tcpip', '5555']);
+});
+
+test('reports an unauthorized headset when enabling legacy TCP/IP fails', async () => {
+  const result = await enableLegacyTcpIp({
+    serial: SERIAL,
+    runAdb: async (args) => {
+      if (args[0] === 'devices') return adbResult(`List of devices attached\n${SERIAL}\tunauthorized\n`);
+      return adbFailure('error: device unauthorized.');
+    },
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, 'device_unauthorized');
+  assert.match(result.error, /Always allow from this computer/);
+});
+
+test('requires a valid serial before enabling legacy TCP/IP', async () => {
+  const calls = [];
+  await assert.rejects(enableLegacyTcpIp({ serial: '', runAdb: async (args) => calls.push(args) }));
+  await assert.rejects(enableLegacyTcpIp({ serial: 'bad serial; rm', runAdb: async (args) => calls.push(args) }));
   assert.deepEqual(calls, []);
 });

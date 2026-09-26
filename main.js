@@ -53,7 +53,7 @@ const {
 const { describeDisplayOverride, parseWmSizes } = require('./lib/display-geometry');
 const { describeRefreshRate, parseRefreshRateHz } = require('./lib/display-refresh');
 const { connectWirelessTarget } = require('./lib/wireless-adb');
-const { readHeadsetIp } = require('./lib/usb-setup');
+const { enableLegacyTcpIp, readHeadsetIp } = require('./lib/usb-setup');
 const {
   buildLockedProfilePreflight,
   classifyAdbState
@@ -1104,10 +1104,15 @@ ipcMain.handle('get-headset-ip', async (_event, serial, config) => {
 
 ipcMain.handle('enable-tcpip', async (_event, serial, config) => {
   try {
-    const safeSerial = serial ? validateAdbSerial(serial) : null;
-    const result = await runAdb(safeSerial ? ['-s', safeSerial, 'tcpip', '5555'] : ['tcpip', '5555'], config);
-    return result.success ? { success: true } : { success: false, error: result.stderr || result.error };
+    const result = await enableLegacyTcpIp({ serial, runAdb: (args) => runAdb(args, config) });
+    sendLog(result.success
+      ? `[System] ${result.alreadyListening
+        ? 'Headset ADB is already listening on port 5555; left it running.'
+        : 'Enabled legacy ADB TCP/IP on port 5555.'}`
+      : `[System-Warning] Enabling legacy ADB TCP/IP failed (${result.code}): ${result.diagnostic || result.error}`);
+    return result;
   } catch (error) {
+    sendLog(`[System-Error] Enabling legacy ADB TCP/IP failed: ${error.message}`);
     return { success: false, error: error.message };
   }
 });
