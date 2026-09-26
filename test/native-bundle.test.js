@@ -778,6 +778,175 @@ test('rejects malformed capabilities and failed stabilization metrics', () => {
   );
 });
 
+function createMissingGpuExecutionResults() {
+  const results = createValidExecutionResults();
+  results.capabilities.stdout = JSON.stringify({
+    ...JSON.parse(results.capabilities.stdout),
+    openclAvailable: false,
+    gpu: null,
+    diagnostic: 'OpenCL stabilization unavailable',
+  });
+  results.nativeUnitTests = null;
+  results.syntheticProbe = null;
+  return results;
+}
+
+test('a machine without an OpenCL GPU fails strict verification with a pointer to the flag', () => {
+  const fixture = createValidFixture();
+  assert.throws(
+    () => validateNativeExecutionResults(fixture.manifest, createMissingGpuExecutionResults()),
+    /no usable OpenCL GPU.*--allow-missing-gpu/i,
+  );
+});
+
+test('allowMissingGpu accepts the exact no-GPU report and records what was skipped', () => {
+  const fixture = createValidFixture();
+  const execution = validateNativeExecutionResults(
+    fixture.manifest,
+    createMissingGpuExecutionResults(),
+    { allowMissingGpu: true },
+  );
+  assert.deepEqual(execution, {
+    gpuVerified: false,
+    gpu: null,
+    skippedChecks: ['nativeUnitTests', 'syntheticProbe'],
+  });
+
+  const withGpu = validateNativeExecutionResults(
+    fixture.manifest,
+    createValidExecutionResults(),
+    { allowMissingGpu: true },
+  );
+  assert.deepEqual(withGpu, { gpuVerified: true, gpu: 'Test GPU', skippedChecks: [] });
+});
+
+test('allowMissingGpu never relaxes anything but the GPU-bound checks', () => {
+  const fixture = createValidFixture();
+
+  // A GPU is present, so the synthetic gates still apply in full.
+  const weak = createValidExecutionResults();
+  weak.syntheticProbe.stdout = JSON.stringify({
+    ...JSON.parse(weak.syntheticProbe.stdout),
+    smallMotionReductionPercent: 29.99,
+  });
+  assert.throws(
+    () => validateNativeExecutionResults(fixture.manifest, weak, { allowMissingGpu: true }),
+    /synthetic stabilization metrics/i,
+  );
+
+  // A GPU is present, so the GPU-bound results may not be omitted.
+  const omitted = createValidExecutionResults();
+  omitted.nativeUnitTests = null;
+  assert.throws(
+    () => validateNativeExecutionResults(fixture.manifest, omitted, { allowMissingGpu: true }),
+    /may only be skipped when the capability probe reports no OpenCL GPU/i,
+  );
+
+  // Only the probe's own no-GPU wording counts; a GPU-less report with the
+  // wrong diagnostic or a GPU name is still a broken bundle.
+  const wrongDiagnostic = createMissingGpuExecutionResults();
+  wrongDiagnostic.capabilities.stdout = JSON.stringify({
+    ...JSON.parse(wrongDiagnostic.capabilities.stdout),
+    diagnostic: 'ready',
+  });
+  assert.throws(
+    () => validateNativeExecutionResults(fixture.manifest, wrongDiagnostic, { allowMissingGpu: true }),
+    /required native contract/i,
+  );
+
+  // The forced-failure probe and CLI parser checks are not GPU-bound and
+  // still gate a no-GPU run.
+  const brokenCleanup = createMissingGpuExecutionResults();
+  brokenCleanup.forcedFailureProbe.stdout = JSON.stringify({
+    schemaVersion: 1, forcedFailure: true, cleanup: 'failed', code: 'stabilization_unavailable',
+  });
+  assert.throws(
+    () => validateNativeExecutionResults(fixture.manifest, brokenCleanup, { allowMissingGpu: true }),
+    /safe cleanup/i,
+  );
+  const acceptedCli = createMissingGpuExecutionResults();
+  acceptedCli.invalidLockedProfileArguments[0] = { status: 0, stdout: '', stderr: '' };
+  assert.throws(
+    () => validateNativeExecutionResults(fixture.manifest, acceptedCli, { allowMissingGpu: true }),
+    /real CLI parser/i,
+  );
+});
+
+test('a no-GPU run never launches the executables that need an OpenCL filter', (t) => {
+  const fixture = createValidFixture();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'q3c-native-bundle-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  writeFixtureToDirectory(directory, fixture);
+
+  const results = createMissingGpuExecutionResults();
+  const calls = [];
+  const verified = verifyNativeBundleDirectory(directory, {
+    allowMissingGpu: true,
+    runExecutable(executablePath, args) {
+      calls.push(args);
+      return [
+        results.client,
+        results.openclFilterProbe,
+        results.capabilities,
+        results.forcedFailureProbe,
+        ...results.invalidLockedProfileArguments,
+      ][calls.length - 1];
+    },
+  });
+
+  assert.deepEqual(verified.execution, {
+    gpuVerified: false,
+    gpu: null,
+    skippedChecks: ['nativeUnitTests', 'syntheticProbe'],
+  });
+  assert.ok(!calls.some((args) => args[0] === '--synthetic'));
+  assert.deepEqual(calls.slice(0, 4), [['--version'], [], ['--q3c-capabilities'], ['--forced-failure']]);
+  assert.equal(calls.length, 4 + LOCKED_PROFILE_INCOMPATIBLE_ARGUMENTS.length);
+
+  // Without the option the same machine is a hard failure before any
+  // GPU-bound executable would have been launched.
+  const strictCalls = [];
+  assert.throws(
+    () => verifyNativeBundleDirectory(directory, {
+      runExecutable(executablePath, args) {
+        strictCalls.push(args);
+        return [
+          results.client,
+          results.openclFilterProbe,
+          results.capabilities,
+          { status: 3, stdout: '', stderr: 'assertion failed' },
+          { status: 1, stdout: '', stderr: 'filter initialization failed' },
+          results.forcedFailureProbe,
+          ...results.invalidLockedProfileArguments,
+        ][strictCalls.length - 1];
+      },
+    }),
+    /no usable OpenCL GPU/i,
+  );
+});
+
+test('the verify script only enables the no-GPU mode through its flag or environment variable', () => {
+  const { parseArguments, ALLOW_MISSING_GPU_FLAG } = require('../scripts/verify-native-bundle');
+  assert.equal(ALLOW_MISSING_GPU_FLAG, '--allow-missing-gpu');
+  assert.deepEqual(parseArguments([], {}), { bundleDirectory: null, allowMissingGpu: false });
+  assert.deepEqual(
+    parseArguments(['--allow-missing-gpu', 'bundle'], {}),
+    { bundleDirectory: 'bundle', allowMissingGpu: true },
+  );
+  assert.deepEqual(
+    parseArguments([], { Q3C_NATIVE_VERIFY_ALLOW_MISSING_GPU: '1' }),
+    { bundleDirectory: null, allowMissingGpu: true },
+  );
+  assert.deepEqual(
+    parseArguments([], { Q3C_NATIVE_VERIFY_ALLOW_MISSING_GPU: 'yes' }),
+    { bundleDirectory: null, allowMissingGpu: false },
+  );
+  assert.throws(() => parseArguments(['--skip-gpu'], {}), /Unknown option/);
+  assert.throws(() => parseArguments(['a', 'b'], {}), /at most one/);
+  const ci = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert.match(ci, /npm run native:verify -- --allow-missing-gpu/);
+});
+
 test('accepts a hash-covered compatible FFmpeg shared-library replacement', () => {
   const files = new Map([
     ['avcodec-62.dll', createPortableExecutable()],
