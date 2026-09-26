@@ -140,9 +140,9 @@ npm start
 
 ## Each session
 
-1. Connect the headset by USB and accept the USB debugging prompt in the headset.
+1. Connect the headset by USB and accept the USB debugging prompt in the headset. Tick **Always allow from this computer** before tapping **Allow**. Enabling ADB over Wi-Fi restarts the headset's ADB service, which forgets a one-time approval and shows the prompt again.
 2. Click **Scan USB devices** in the app and select your headset.
-3. Quest 3 Caster detects the local IP, enables legacy ADB TCP/IP on port 5555, and confirms readiness. The USB cable may be removed once the IP is shown.
+3. Quest 3 Caster detects the local IP, enables legacy ADB TCP/IP on port 5555, and checks that the headset accepts a Wi-Fi connection. The USB cable may be removed once the IP is shown. If the status line asks you to allow USB debugging, put the headset on, accept the prompt with **Always allow from this computer** ticked, and click **Start casting**.
 4. Click **Start casting**. The app connects wirelessly, runs a capability preflight, and launches scrcpy. The preflight also reads the headset's display refresh rate; if it is not 60 or 120 Hz, the status line says so and the log records it. Casting proceeds either way.
 5. Quest 3 Caster does not use Android's pairing-code workflow or Meta Horizon Link Auto-Connect because neither exposes an ADB connection the app can use.
 6. USB setup is required again after every headset restart because legacy ADB TCP/IP does not survive a reboot.

@@ -53,6 +53,7 @@ const {
 const { describeDisplayOverride, parseWmSizes } = require('./lib/display-geometry');
 const { describeRefreshRate, parseRefreshRateHz } = require('./lib/display-refresh');
 const { connectWirelessTarget } = require('./lib/wireless-adb');
+const { readHeadsetIp } = require('./lib/usb-setup');
 const {
   buildLockedProfilePreflight,
   classifyAdbState
@@ -1090,18 +1091,13 @@ ipcMain.handle('scan-devices', async (_event, config) => {
 
 ipcMain.handle('get-headset-ip', async (_event, serial, config) => {
   try {
-    const safeSerial = serial ? validateAdbSerial(serial) : null;
-    const args = safeSerial ? ['-s', safeSerial, 'shell', 'ip', '-o', '-4', 'addr', 'show', 'wlan0'] : ['shell', 'ip', '-o', '-4', 'addr', 'show', 'wlan0'];
-    const result = await runAdb(args, config);
-    const match = result.success && result.stdout.match(/inet\s+([0-9.]+)/);
-    if (match) return { success: true, ip: match[1] };
-    const fallbackArgs = safeSerial ? ['-s', safeSerial, 'shell', 'ifconfig', 'wlan0'] : ['shell', 'ifconfig', 'wlan0'];
-    const fallback = await runAdb(fallbackArgs, config);
-    const fallbackMatch = fallback.success && (fallback.stdout.match(/inet\s+addr:([0-9.]+)/) || fallback.stdout.match(/inet\s+([0-9.]+)/));
-    return fallbackMatch
-      ? { success: true, ip: fallbackMatch[1] }
-      : { success: false, error: 'Could not retrieve IP address. Ensure headset is connected to Wi-Fi.' };
+    const result = await readHeadsetIp({ serial, runAdb: (args) => runAdb(args, config) });
+    if (!result.success) {
+      sendLog(`[System-Warning] Headset IP lookup failed (${result.code}): ${result.diagnostic || result.error}`);
+    }
+    return result;
   } catch (error) {
+    sendLog(`[System-Error] Headset IP lookup failed: ${error.message}`);
     return { success: false, error: error.message };
   }
 });

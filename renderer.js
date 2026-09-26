@@ -42,6 +42,9 @@ const elements = {
 const state = {
   selectedUsbDevice: null,
   detectedIp: null,
+  // Bumped by every scan and headset selection so a slower, older setup
+  // attempt cannot overwrite the result of a newer one.
+  usbSetupToken: 0,
   selectedProfile: 'obsLowLatency1080p60',
   outputFormat: 'widescreen',
   currentSerial: null,
@@ -322,7 +325,83 @@ async function stopCasting() {
   );
 }
 
+const TCPIP_RESTART_RETRY_DELAYS_MS = [500, 1000, 1500, 2000];
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// `adb tcpip` restarts the headset's ADB service, so port 5555 briefly refuses
+// connections. Retry only that case, a bounded number of times, and stop as
+// soon as a newer scan or selection has taken over.
+async function verifyWirelessEndpoint(target, isCurrent) {
+  let connection = await window.api.connectWireless(target, getRuntimeConfig());
+  for (const waitMs of TCPIP_RESTART_RETRY_DELAYS_MS) {
+    if (connection.success || connection.code !== 'connection_refused' || !isCurrent()) break;
+    await delay(waitMs);
+    if (!isCurrent()) break;
+    connection = await window.api.connectWireless(target, getRuntimeConfig());
+  }
+  return connection;
+}
+
+function markHeadsetDetected(ip) {
+  elements.headsetIp.value = ip;
+  state.detectedIp = ip;
+  elements.startCast.disabled = false;
+  elements.selectedAddress.textContent = `Detected at ${ip} — USB cable may be removed.`;
+}
+
+async function setUpUsbHeadset(device, button) {
+  const setupToken = ++state.usbSetupToken;
+  const isCurrent = () => setupToken === state.usbSetupToken;
+  state.selectedUsbDevice = device;
+  state.detectedIp = null;
+  elements.headsetIp.value = '';
+  elements.startCast.disabled = true;
+  [...elements.usbDevices.children].forEach((child) => child.classList.remove('selected'));
+  button.classList.add('selected');
+  setMessage(elements.pairingMessage, 'Finding the headset IP address…');
+  const ipResult = await window.api.getHeadsetIP(device.serial, getRuntimeConfig());
+  if (!isCurrent()) return;
+  if (!ipResult.success) {
+    setMessage(elements.pairingMessage, ipResult.error || 'Could not find the headset IP address.', true);
+    setAvailability(ipResult.code === 'device_unauthorized'
+      ? 'Waiting for you to allow USB debugging. Scan again after tapping Allow.'
+      : 'Headset setup did not finish.', 'error');
+    return;
+  }
+  setMessage(elements.pairingMessage, 'Enabling ADB over Wi-Fi…');
+  const tcp = await window.api.enableTcpIp(device.serial, getRuntimeConfig());
+  if (!isCurrent()) return;
+  if (!tcp.success) {
+    setMessage(elements.pairingMessage, tcp.error || 'Could not enable ADB over Wi-Fi.', true);
+    setAvailability('Headset setup did not finish.', 'error');
+    return;
+  }
+  setMessage(elements.pairingMessage, 'Checking the Wi-Fi connection…');
+  const connection = await verifyWirelessEndpoint(`${ipResult.ip}:5555`, isCurrent);
+  if (!isCurrent()) return;
+  if (connection.success) {
+    markHeadsetDetected(ipResult.ip);
+    setMessage(elements.pairingMessage, 'Ready. The USB cable may now be removed.');
+    setAvailability('Ready to cast.', 'ready');
+    return;
+  }
+  if (connection.code === 'device_unauthorized') {
+    // Port 5555 is open; only the headset's approval is missing, and Start
+    // casting reconnects once it is given, so there is no need to rescan.
+    markHeadsetDetected(ipResult.ip);
+    setMessage(elements.pairingMessage, connection.error, true);
+    setAvailability('Allow USB debugging in the headset, then press Start casting.', 'warning');
+    return;
+  }
+  setMessage(elements.pairingMessage, connection.error || 'Could not connect to the headset over Wi-Fi.', true);
+  setAvailability('Headset setup did not finish.', 'error');
+}
+
 async function scanUsbDevices() {
+  state.usbSetupToken += 1;
   elements.usbDevices.replaceChildren();
   state.detectedIp = null;
   state.selectedUsbDevice = null;
@@ -362,32 +441,7 @@ async function scanUsbDevices() {
     button.type = 'button';
     button.className = 'usb-device-button';
     button.textContent = device.serial;
-    button.addEventListener('click', async () => {
-      state.selectedUsbDevice = device;
-      state.detectedIp = null;
-      elements.headsetIp.value = '';
-      elements.startCast.disabled = true;
-      [...elements.usbDevices.children].forEach((child) => child.classList.remove('selected'));
-      button.classList.add('selected');
-      setMessage(elements.pairingMessage, 'Finding the headset IP address\u2026');
-      const ipResult = await window.api.getHeadsetIP(device.serial, getRuntimeConfig());
-      if (!ipResult.success) {
-        setMessage(elements.pairingMessage, ipResult.error || 'Could not find the headset IP address.', true);
-        return;
-      }
-      setMessage(elements.pairingMessage, 'Enabling ADB over Wi-Fi\u2026');
-      const tcp = await window.api.enableTcpIp(device.serial, getRuntimeConfig());
-      if (!tcp.success) {
-        setMessage(elements.pairingMessage, tcp.error || 'Could not enable ADB over Wi-Fi.', true);
-        return;
-      }
-      elements.headsetIp.value = ipResult.ip;
-      state.detectedIp = ipResult.ip;
-      elements.startCast.disabled = false;
-      setMessage(elements.pairingMessage, 'Ready. The USB cable may now be removed.');
-      elements.selectedAddress.textContent = `Detected at ${ipResult.ip} \u2014 USB cable may be removed.`;
-      setAvailability('Ready to cast.', 'ready');
-    });
+    button.addEventListener('click', () => setUpUsbHeadset(device, button));
     elements.usbDevices.append(button);
   }
 }
