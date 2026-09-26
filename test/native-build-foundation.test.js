@@ -86,8 +86,13 @@ test('pins every native source and downloaded file in one valid manifest', () =>
     new Set(manifest.sources.map((source) => source.id)),
     new Set(expectedSources.keys()),
   );
+  // Compared key by key rather than with assert.partialDeepStrictEqual,
+  // which does not exist on Node 20 and CI still runs on it.
   for (const source of manifest.sources) {
-    assert.partialDeepStrictEqual(source, expectedSources.get(source.id));
+    const expected = expectedSources.get(source.id);
+    for (const [key, value] of Object.entries(expected)) {
+      assert.deepEqual(source[key], value, `${source.id}.${key}`);
+    }
   }
   assert.deepEqual(
     manifest.toolchain.aptPackages,
