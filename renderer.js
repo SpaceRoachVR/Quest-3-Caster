@@ -10,6 +10,7 @@ const elements = {
   selectedAddress: document.getElementById('selected-device-address'),
   availability: document.getElementById('availability-message'),
   startCast: document.getElementById('start-cast-button'),
+  scanUsb: document.getElementById('scan-usb-button'),
   microphone: document.getElementById('microphone-toggle'),
   awake: document.getElementById('awake-toggle'),
   reconnect: document.getElementById('reconnect-toggle'),
@@ -28,7 +29,7 @@ const elements = {
   headsetIp: document.getElementById('headset-ip-input'),
   pairingMessage: document.getElementById('pairing-message'),
   adbPath: document.getElementById('adb-path-input'),
-  scrcpyPath: document.getElementById('scrcpy-path-input'),
+  castLockNote: document.getElementById('cast-lock-note'),
   diagnosticsMessage: document.getElementById('diagnostics-message'),
   gameVolume: document.getElementById('game-volume-slider'),
   gameVolumeValue: document.getElementById('game-volume-value'),
@@ -67,8 +68,21 @@ function setAvailability(message, tone = 'neutral') {
   elements.availability.dataset.tone = tone;
 }
 
+function setConnectionStatus(label, state) {
+  elements.connectionStatus.textContent = label;
+  elements.connectionStatus.dataset.state = state;
+}
+
 function getRuntimeConfig() {
-  return { adbPath: elements.adbPath.value.trim(), scrcpyPath: elements.scrcpyPath.value.trim() };
+  return { adbPath: elements.adbPath.value.trim() };
+}
+
+// A process that could not be spawned reports text such as "spawn … ENOENT",
+// which tells the user nothing they can act on. The main process logs the raw
+// cause; here it becomes a next step. Anything else is already written for
+// the user and passes through.
+function describeProcessFailure(error, nextStep) {
+  return !error || /\b(ENOENT|EACCES|EPERM|spawn)\b/i.test(error) ? nextStep : error;
 }
 
 function persistSetting(key, value) {
@@ -77,7 +91,8 @@ function persistSetting(key, value) {
 
 function loadSettings() {
   elements.adbPath.value = localStorage.getItem('adbPath') || '';
-  elements.scrcpyPath.value = localStorage.getItem('scrcpyPath') || '';
+  // Left over from the removed custom scrcpy path setting.
+  localStorage.removeItem('scrcpyPath');
   elements.microphone.checked = localStorage.getItem('streamMic') === 'true';
   elements.awake.checked = localStorage.getItem('keepAwake') === 'true';
   elements.reconnect.checked = localStorage.getItem('autoReconnect') !== 'false';
@@ -99,10 +114,18 @@ function updateProfileControls() {
     const selected = button.dataset.profile === state.selectedProfile;
     const unavailableForOutput = state.outputFormat === 'square' && button.dataset.profile === 'obsStabilized1080p60';
     button.classList.toggle('selected', selected);
-    button.disabled = unavailableForOutput;
+    button.disabled = unavailableForOutput || state.isCasting;
     button.setAttribute('aria-checked', String(selected));
-    button.setAttribute('aria-disabled', String(unavailableForOutput));
+    button.setAttribute('aria-disabled', String(unavailableForOutput || state.isCasting));
   });
+  // These settings are fixed for the life of a cast. Disabling them says so,
+  // where an enabled control that ignores clicks does not.
+  [...elements.outputFormatButtons, ...elements.eyeButtons].forEach((button) => {
+    button.disabled = state.isCasting;
+  });
+  elements.microphone.disabled = state.isCasting;
+  elements.microphone.closest('.toggle-row').classList.toggle('disabled', state.isCasting);
+  elements.castLockNote.classList.toggle('hidden', !state.isCasting);
   elements.profileNote.textContent = state.outputFormat === 'square'
     ? 'Square output uses the locked Low Latency profile; Stabilized remains calibrated for 16:9 only.'
     : state.selectedProfile === 'obsStabilized1080p60'
@@ -133,6 +156,7 @@ function resetConnectionState() {
   setMessage(elements.pairingMessage, '');
   elements.startCast.disabled = true;
   elements.startCast.textContent = 'Start casting';
+  setConnectionStatus('Not connected', 'disconnected');
   elements.selectedAddress.textContent = 'Connect the headset by USB, accept the debugging prompt in the headset, then scan below.';
   setAvailability('Scan USB devices to begin.');
 }
@@ -145,12 +169,13 @@ function returnToReadyState(message, tone = 'ready') {
   state.streamGeneration = null;
   state.activeStreamOwnership = null;
   elements.startCast.textContent = 'Start casting';
+  elements.scanUsb.disabled = false;
+  updateProfileControls();
   if (!state.detectedIp) {
-    elements.connectionStatus.textContent = 'Not connected';
     resetConnectionState();
     return;
   }
-  elements.connectionStatus.textContent = 'Connected';
+  setConnectionStatus('Connected', 'connected');
   elements.startCast.disabled = false;
   setAvailability(message, tone);
 }
@@ -247,15 +272,66 @@ async function runPreflight(serial) {
   return result;
 }
 
+function getExpectedProfileId() {
+  return state.resolvedProfile?.profileId
+    || rendererQuality.getLockedProfileId(
+      state.selectedProfile,
+      state.outputFormat,
+      elements.rightEye.checked
+    );
+}
+
+// Only the locked path can substitute a profile; a calibrated stream has
+// nothing to fall back to, so a mismatch there is not a fallback. Returns ''
+// when the stream is running the profile that was asked for.
+function getFallbackNotice(status) {
+  if (state.resolvedProfile?.calibrated
+      || !status?.effectiveProfile
+      || status.effectiveProfile === getExpectedProfileId()) {
+    return '';
+  }
+  return status.fallbackWarning
+    ? `Stabilized could not start; Low Latency is active. ${status.fallbackWarning}`
+    : 'Stabilized could not start; Low Latency is active.';
+}
+
+// A start can fail after the keep-awake bypass was applied, so every failure
+// exit hands the proximity sensor back rather than leaving the headset awake.
+async function failStart(message) {
+  const proximityWarning = await restoreProximitySensor();
+  setAvailability(proximityWarning ? `${message} ${proximityWarning}` : message, 'error');
+  elements.scanUsb.disabled = false;
+  elements.startCast.disabled = false;
+}
+
 async function connectAndStart() {
   if (!state.detectedIp || state.isCasting) return;
   elements.startCast.disabled = true;
+  // A scan resets the connection state this start depends on, and during a
+  // cast it would relabel the only control that can stop the stream.
+  elements.scanUsb.disabled = true;
   setAvailability('Connecting to headset\u2026', 'connecting');
   const target = `${state.detectedIp}:5555`;
   const connection = await window.api.connectWireless(target, getRuntimeConfig());
   if (!connection.success) {
-    setAvailability(connection.error || 'Could not connect to this headset.', 'error');
-    elements.startCast.disabled = false;
+    if (connection.code === 'connection_refused') {
+      // Port 5555 closes when the headset restarts, so the saved address is
+      // no longer a working endpoint. Drop it rather than leave "Connected"
+      // and an enabled Start button pointing at it.
+      resetConnectionState();
+      elements.scanUsb.disabled = false;
+      setAvailability(
+        'The headset stopped accepting Wi-Fi connections, which happens after a headset restart. '
+          + 'Plug it in by USB, then press Scan USB devices.',
+        'error'
+      );
+      elements.scanUsb.focus();
+      return;
+    }
+    await failStart(describeProcessFailure(
+      connection.error,
+      'ADB did not start. Open Settings and choose Verify executables, or clear the custom ADB path.'
+    ));
     return;
   }
   state.currentSerial = connection.endpoint || target;
@@ -270,7 +346,8 @@ async function connectAndStart() {
   }
   const preflight = await runPreflight(state.currentSerial);
   if (!preflight) {
-    elements.startCast.disabled = false;
+    // runPreflight has already put the reason on the availability line.
+    await failStart(elements.availability.textContent);
     return;
   }
   const request = rendererQuality.buildResolvedStreamPayload(state.resolvedProfile, {
@@ -286,8 +363,10 @@ async function connectAndStart() {
   setAvailability('Starting cast\u2026', 'connecting');
   const stream = await window.api.startStream(request, getRuntimeConfig());
   if (!stream.success) {
-    setAvailability(stream.error || 'Quest 3 Caster could not start the stream.', 'error');
-    elements.startCast.disabled = false;
+    await failStart(describeProcessFailure(
+      stream.error,
+      'The casting engine did not start. Open Settings and choose Verify executables; details are in the log folder.'
+    ));
     return;
   }
   state.isCasting = true;
@@ -297,12 +376,17 @@ async function connectAndStart() {
     state.selectedProfile,
     elements.microphone.checked
   );
-  elements.connectionStatus.textContent = 'Casting';
+  setConnectionStatus('Casting', 'casting');
   elements.startCast.disabled = false;
   elements.startCast.textContent = 'Stop casting';
+  updateProfileControls();
   // The refresh-rate warning is advisory: the cast runs either way, so it
   // shares the active line rather than blocking the start.
-  const castWarnings = [keepAwakeWarning, preflight.refreshRateWarning].filter(Boolean);
+  // The fallback notice is read from the start result: the status event for
+  // this start arrives before the generation above is known, so it is dropped.
+  const castWarnings = [
+    getFallbackNotice(stream), keepAwakeWarning, preflight.refreshRateWarning
+  ].filter(Boolean);
   setAvailability(
     castWarnings.length > 0 ? `Casting is active. ${castWarnings.join(' ')}` : 'Casting is active.',
     castWarnings.length > 0 ? 'warning' : 'ready'
@@ -384,6 +468,7 @@ async function setUpUsbHeadset(device, button) {
   if (!isCurrent()) return;
   if (connection.success) {
     markHeadsetDetected(ipResult.ip);
+    setConnectionStatus('Connected', 'connected');
     setMessage(elements.pairingMessage, 'Ready. The USB cable may now be removed.');
     setAvailability('Ready to cast.', 'ready');
     return;
@@ -401,6 +486,7 @@ async function setUpUsbHeadset(device, button) {
 }
 
 async function scanUsbDevices() {
+  if (state.isCasting) return;
   state.usbSetupToken += 1;
   elements.usbDevices.replaceChildren();
   state.detectedIp = null;
@@ -408,6 +494,7 @@ async function scanUsbDevices() {
   elements.headsetIp.value = '';
   elements.startCast.disabled = true;
   elements.startCast.textContent = 'Start casting';
+  setConnectionStatus('Not connected', 'disconnected');
   // The two status lines sit next to each other, so they must never describe
   // different states at once. Availability owns "what happens next"; the
   // pairing line owns device detail.
@@ -415,21 +502,29 @@ async function scanUsbDevices() {
   setAvailability('Looking for a connected headset\u2026', 'connecting');
   const result = await window.api.scanDevices(getRuntimeConfig());
   if (!result.success) {
-    setMessage(elements.pairingMessage, result.error || 'Unable to scan for USB devices.', true);
+    setMessage(elements.pairingMessage, describeProcessFailure(
+      result.error,
+      'ADB did not start. Open Settings and choose Verify executables, or clear the custom ADB path.'
+    ), true);
     setAvailability('Quest 3 Caster could not reach ADB.', 'error');
     return;
   }
   const devices = result.devices.filter((device) => !device.isWireless && device.status === 'device');
   const unauthorized = result.devices.filter((device) => device.status === 'unauthorized');
+  const offline = result.devices.filter((device) => !device.isWireless && device.status === 'offline');
   if (devices.length === 0) {
-    // An unauthorized device is a headset waiting on its own prompt, not a
-    // missing one, and it was previously filtered out and reported as absent.
-    setMessage(elements.pairingMessage, unauthorized.length > 0
-      ? 'Put the headset on and accept the \u201cAllow USB debugging\u201d prompt, then scan again.'
-      : 'No headset detected. Check the USB cable, and confirm Developer Mode is enabled in the Meta Horizon phone app.', true);
-    setAvailability(unauthorized.length > 0
-      ? 'Waiting for you to allow USB debugging.'
-      : 'No headset found.', 'error');
+    // An unauthorized or offline device is a headset that is plugged in but
+    // not usable yet, not a missing one, so each gets its own next step.
+    if (unauthorized.length > 0) {
+      setMessage(elements.pairingMessage, 'Put the headset on and accept the \u201cAllow USB debugging\u201d prompt, then scan again.', true);
+      setAvailability('Waiting for you to allow USB debugging.', 'error');
+    } else if (offline.length > 0) {
+      setMessage(elements.pairingMessage, 'Unplug and replug the USB cable, wake the headset, then scan again.', true);
+      setAvailability('Headset found, but it is offline.', 'error');
+    } else {
+      setMessage(elements.pairingMessage, 'No headset detected. Check the USB cable, and confirm Developer Mode is enabled in the Meta Horizon phone app.', true);
+      setAvailability('No headset found.', 'error');
+    }
     return;
   }
   setMessage(elements.pairingMessage, devices.length === 1
@@ -503,11 +598,24 @@ function wireEvents() {
   elements.awake.addEventListener('change', setKeepAwake);
   elements.reconnect.addEventListener('change', () => persistSetting('autoReconnect', elements.reconnect.checked));
   elements.adbPath.addEventListener('input', () => persistSetting('adbPath', elements.adbPath.value));
-  elements.scrcpyPath.addEventListener('input', () => persistSetting('scrcpyPath', elements.scrcpyPath.value));
   document.getElementById('verify-paths-button').addEventListener('click', async () => {
     setMessage(elements.diagnosticsMessage, 'Verifying executables\u2026');
     const result = await window.api.checkPaths(getRuntimeConfig());
-    setMessage(elements.diagnosticsMessage, result.adb && result.scrcpy ? 'ADB and scrcpy are ready.' : 'ADB or scrcpy could not be found. Check the paths above.', !(result.adb && result.scrcpy));
+    const problems = [];
+    if (!result.adb) {
+      problems.push(describeProcessFailure(
+        result.adbError,
+        'ADB did not run. Clear the custom ADB path to use the bundled copy.'
+      ));
+    }
+    if (!result.scrcpy) {
+      problems.push('The bundled casting engine failed verification. Reinstall Quest 3 Caster; details are in the log folder.');
+    }
+    setMessage(
+      elements.diagnosticsMessage,
+      problems.length > 0 ? problems.join(' ') : 'ADB and the bundled casting engine are ready.',
+      problems.length > 0
+    );
   });
   document.getElementById('open-log-folder-button').addEventListener('click', async () => {
     const result = await window.api.openLogFolder();
@@ -536,20 +644,27 @@ window.api.onStreamExit(async (payload) => {
   );
 });
 
+// The cast itself is unaffected: video and game audio run in the primary
+// process. Only the separate microphone stream is gone.
+window.api.onMicrophoneExit((payload) => {
+  if (!state.isCasting || payload?.generation !== state.streamGeneration) return;
+  setAvailability(
+    'Casting is active. The headset microphone stopped; stop and start the cast to restore it.',
+    'warning'
+  );
+});
+
 window.api.onStreamStatus((status) => {
-  if (status?.generation !== state.streamGeneration) return;
-  const expectedProfile = state.resolvedProfile?.profileId
-    || rendererQuality.getLockedProfileId(
-      state.selectedProfile,
-      state.outputFormat,
-      elements.rightEye.checked
-    );
-  // Only the locked path can substitute a profile mid-start; a calibrated
-  // stream has nothing to fall back to, so a mismatch there is not that.
-  if (!state.resolvedProfile?.calibrated
-      && status.effectiveProfile && status.effectiveProfile !== expectedProfile) {
-    setAvailability('Stabilized could not start; Low Latency is active.', 'ready');
-  }
+  if (!state.isCasting || status?.generation !== state.streamGeneration) return;
+  // A status for the current generation means a stream is live again after a
+  // reconnect or a runtime fallback. Clear "Reconnecting…" and re-apply the
+  // saved volumes, which belong to the previous scrcpy process.
+  const fallbackNotice = getFallbackNotice(status);
+  setAvailability(
+    fallbackNotice ? `Casting is active. ${fallbackNotice}` : 'Casting is active.',
+    fallbackNotice ? 'warning' : 'ready'
+  );
+  void applyStoredVolumes();
 });
 
 async function initialize() {

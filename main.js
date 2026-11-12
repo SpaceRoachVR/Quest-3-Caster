@@ -11,21 +11,14 @@ const {
 
 const VOLUME_ATTEMPTS = 5;
 const VOLUME_RETRY_DELAY_MS = 400;
-const {
-  buildScrcpyArguments,
-  calculateOutputSize,
-  filterH264Encoders,
-  formatOutputEstimate,
-  getProductionProfile,
-  parseCrop,
-  validateAdbSerial,
-  validateStreamConfig
-} = require('./lib/stream-config');
+const { validateAdbSerial } = require('./lib/stream-config');
+const { normalizeAdbPath } = require('./lib/executable-path');
 const { createStreamSession } = require('./lib/stream-session');
 const { createStreamChildOwnership } = require('./lib/stream-child-ownership');
 const {
   createStartFailureResult,
   hasCurrentLivePrimary,
+  isChildRunning,
   shouldCleanupFailedStart
 } = require('./lib/stream-start-outcome');
 const {
@@ -48,6 +41,7 @@ const {
 const { launchCalibratedAttempt } = require('./lib/calibrated-startup');
 const {
   assertCalibrationMatchesDisplay,
+  getUserCalibrationDirectory,
   loadCalibration
 } = require('./lib/calibration-store');
 const { describeDisplayOverride, parseWmSizes } = require('./lib/display-geometry');
@@ -83,19 +77,28 @@ let fileLogger = null;
 let activeProximityBypass = null;
 let restoringProximityBeforeQuit = false;
 
+const RECONNECT_DELAYS_MS = Object.freeze([2000, 5000, 10000]);
+// How long a preflight's bundle verification and capability probe stay good
+// for the start that follows it. A Start click runs preflight then start
+// back to back; anything older is verified again.
+const NATIVE_VERIFICATION_REUSE_MS = 30000;
+let recentNativeVerification = null;
+
 const streamSession = createStreamSession({
   scheduler: global,
-  reconnectDelaysMs: [2000, 5000, 10000],
+  reconnectDelaysMs: RECONNECT_DELAYS_MS,
   onReconnect: (generation) => {
     if (!streamSession.isCurrent(generation) || !lastStreamRequest) {
       return;
     }
 
     sendLog(`[System] Reconnecting stream (attempt ${streamSession.getRetryState().retryCount}).`);
-    const reconnect = lastStreamRequest.locked === true
-      ? relaunchLockedStream(lastStreamRequest.context)
-      : launchStream(generation, lastStreamRequest.streamConfig, lastStreamRequest.runtimeConfig);
-    reconnect
+    relaunchLockedStream(lastStreamRequest.context)
+      .then(() => {
+        // The retry limit bounds one outage. A reconnect that produced a live
+        // stream ends that outage, so the next drop gets the full budget.
+        streamSession.markRecovered(generation);
+      })
       .catch((error) => {
         if (!streamSession.isCurrent(generation)) return;
         sendLog(`[System-Error] Reconnect failed: ${error.message}`);
@@ -279,7 +282,22 @@ function completePendingStart(operationToken) {
   }
 }
 
+// Two instances fight over the headset and the fixed microphone port, so a
+// second launch hands over to the window that is already open.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
   Menu.setApplicationMenu(null);
   const dataDirectory = app.getPath('userData');
   fileLogger = new RollingFileLogger({ fs, directory: path.join(dataDirectory, 'logs') });
@@ -310,38 +328,27 @@ app.on('will-quit', (event) => {
   restoreProximityBypass().finally(() => app.quit());
 });
 
-function normalizeExecutablePath(value, fallback, label) {
-  if (value === undefined || value === null || value === '') {
-    return fallback;
-  }
-  if (typeof value !== 'string' || value.length > 32767 || value.trim() !== value) {
-    throw new Error(`Invalid ${label} path.`);
-  }
-  return value;
-}
-
+// The cast itself always runs the verified bundled client, so ADB is the only
+// executable a user can point elsewhere.
 function normalizeRuntimeConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new Error('Runtime configuration is required.');
   }
-
-  const bundled = getBundledToolPaths();
   return {
-    adbPath: normalizeExecutablePath(config.adbPath, bundled.adbPath, 'ADB'),
-    scrcpyPath: normalizeExecutablePath(config.scrcpyPath, bundled.scrcpyPath, 'scrcpy')
+    adbPath: normalizeAdbPath(config.adbPath, { fallback: getBundledAdbPath(), fs })
   };
 }
 
 // Falling back to a bare "adb" runs whatever happens to be on PATH, which is
 // often an unrelated tool's old copy. Mismatched adb versions kill each other's
-// server, so prefer the binaries shipped alongside this app.
-let cachedBundledToolPaths = null;
+// server, so prefer the binary shipped alongside this app.
+let cachedBundledAdbPath = null;
 
-function getBundledToolPaths() {
-  if (cachedBundledToolPaths) {
-    return cachedBundledToolPaths;
+function getBundledAdbPath() {
+  if (cachedBundledAdbPath) {
+    return cachedBundledAdbPath;
   }
-  let resolved = { adbPath: 'adb', scrcpyPath: 'scrcpy' };
+  let resolved = 'adb';
   try {
     const bundleDirectory = resolveNativeBundleDirectory({
       isPackaged: app.isPackaged,
@@ -349,16 +356,12 @@ function getBundledToolPaths() {
       resourcesPath: process.resourcesPath
     });
     const adbPath = path.join(bundleDirectory, 'adb.exe');
-    const scrcpyPath = path.join(bundleDirectory, 'scrcpy.exe');
-    resolved = {
-      adbPath: fs.existsSync(adbPath) ? adbPath : 'adb',
-      scrcpyPath: fs.existsSync(scrcpyPath) ? scrcpyPath : 'scrcpy'
-    };
+    if (fs.existsSync(adbPath)) resolved = adbPath;
   } catch (_error) {
-    // A missing or unreadable bundle falls back to PATH lookup below.
+    // A missing or unreadable bundle falls back to PATH lookup.
   }
-  cachedBundledToolPaths = resolved;
-  return cachedBundledToolPaths;
+  cachedBundledAdbPath = resolved;
+  return cachedBundledAdbPath;
 }
 
 function runFile(executable, args, timeoutMs = 10000) {
@@ -396,6 +399,21 @@ function getVerifiedNativeRuntime() {
       `Bundled OBS casting is unavailable: ${error.message}. Run npm run native:build or restore the verified native bundle.`
     );
   }
+}
+
+function rememberNativeVerification(nativeRuntime, capabilities) {
+  recentNativeVerification = { nativeRuntime, capabilities, at: Date.now() };
+}
+
+// Single use: each cast is launched from a verification made for it, either by
+// the preflight that just ran or by the start itself.
+function takeRecentNativeVerification() {
+  const verification = recentNativeVerification;
+  recentNativeVerification = null;
+  if (!verification || Date.now() - verification.at > NATIVE_VERIFICATION_REUSE_MS) {
+    return null;
+  }
+  return verification;
 }
 
 function sendStreamStatus(status) {
@@ -471,6 +489,13 @@ function getCalibrationDirectories() {
   } catch (_error) {
     // Falls through to the bundled directory below.
   }
+  // The wizard runs outside Electron and writes here. It matches userData in
+  // an installed build; a development run uses the package name instead, so
+  // the folder is listed in its own right.
+  const wizardDirectory = getUserCalibrationDirectory();
+  if (wizardDirectory && !directories.includes(wizardDirectory)) {
+    directories.push(wizardDirectory);
+  }
   directories.push(path.join(__dirname, 'calibration'));
   return directories;
 }
@@ -484,53 +509,6 @@ async function readDeviceModel(serial, runtimeConfig) {
   } catch (_error) {
     return null;
   }
-}
-
-function getStreamPresentationArgs(streamConfig) {
-  const args = [];
-  const renderDrivers = new Set(['default', 'direct3d', 'opengl', 'software']);
-  if (streamConfig.renderDriver !== undefined && streamConfig.renderDriver !== null) {
-    if (!renderDrivers.has(streamConfig.renderDriver)) {
-      throw new Error('Unsupported render driver.');
-    }
-    if (streamConfig.renderDriver !== 'default') {
-      args.push('--render-driver', streamConfig.renderDriver);
-    }
-  }
-
-  if (streamConfig.displayId !== undefined && streamConfig.displayId !== null && streamConfig.displayId !== 'default') {
-    if (!Number.isSafeInteger(Number(streamConfig.displayId)) || Number(streamConfig.displayId) < 0) {
-      throw new Error('Display ID must be a non-negative integer.');
-    }
-    args.push('--display-id', String(Number(streamConfig.displayId)));
-  }
-
-  return args;
-}
-
-function normalizeStreamConfig(streamConfig, displaySize) {
-  if (!streamConfig || typeof streamConfig !== 'object' || Array.isArray(streamConfig)) {
-    throw new Error('Stream configuration is required.');
-  }
-
-  const configWithFullDisplayCrop = streamConfig.crop === 'none'
-    ? { ...streamConfig, crop: `${displaySize.width}:${displaySize.height}:0:0` }
-    : streamConfig;
-  const validated = validateStreamConfig(configWithFullDisplayCrop, displaySize);
-  if (streamConfig.streamMic !== undefined && typeof streamConfig.streamMic !== 'boolean') {
-    throw new Error('Microphone stream state must be a boolean.');
-  }
-  if (streamConfig.micSource !== undefined && !['mic', 'mic-unprocessed', 'mic-voice-recognition', 'mic-voice-communication'].includes(streamConfig.micSource)) {
-    throw new Error('Unsupported microphone source.');
-  }
-  getStreamPresentationArgs(streamConfig);
-  return validated;
-}
-
-async function detectScrcpyMajorVersion(scrcpyPath) {
-  const versionResult = await runFile(scrcpyPath, ['--version']);
-  const match = /scrcpy\s+([0-9]+)/i.exec(versionResult.stdout);
-  return match ? Number(match[1]) : 2;
 }
 
 function waitForChildSpawn(child) {
@@ -563,27 +541,13 @@ function sendPrimaryExit(generation, code, signal) {
   }
 }
 
-function attachPrimaryLifecycle(child, generation) {
-  let exitSent = false;
-  child.on('error', (error) => {
-    if (!streamSession.isCurrent(generation)) return;
-    if (!childOwnership.clearPrimaryAndTerminateMicrophone(generation, child)) return;
-    sendLog(`[System-Error] Failed to launch scrcpy process: ${error.message}. Check your scrcpy path in Settings!`);
-    if (!exitSent) {
-      exitSent = true;
-      sendPrimaryExit(generation, -1, null);
-    }
-  });
-  child.on('exit', (code, signal) => {
-    if (!streamSession.isCurrent(generation)) return;
-    if (!childOwnership.clearPrimaryAndTerminateMicrophone(generation, child)) return;
-    sendLog(`[System] scrcpy stream exited with code ${code} and signal ${signal}`);
-    if (!exitSent) {
-      exitSent = true;
-      sendPrimaryExit(generation, code, signal);
-    }
-  });
-  attachChildLogListeners(child, 'scrcpy', generation);
+// Reaching the send below means the microphone died on its own while its cast
+// was still current: a stop, a replacement or a primary exit clears ownership
+// first, so clearMicrophone returns false for those and nothing is reported.
+function sendMicrophoneExit(generation) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('microphone-exit', { generation });
+  }
 }
 
 function attachMicrophoneLifecycle(child, generation) {
@@ -591,46 +555,15 @@ function attachMicrophoneLifecycle(child, generation) {
     if (!streamSession.isCurrent(generation)) return;
     if (!childOwnership.clearMicrophone(generation, child)) return;
     sendLog(`[System-Error] Failed to launch microphone stream: ${error.message}`);
+    sendMicrophoneExit(generation);
   });
   child.on('exit', (code, signal) => {
     if (!streamSession.isCurrent(generation)) return;
     if (!childOwnership.clearMicrophone(generation, child)) return;
     sendLog(`[System] Microphone stream exited with code ${code} and signal ${signal}`);
+    sendMicrophoneExit(generation);
   });
   attachChildLogListeners(child, 'scrcpy-mic', generation);
-}
-
-async function launchMicrophoneStream(generation, streamConfig, runtimeConfig) {
-  if (!streamConfig.streamMic || !streamSession.isCurrent(generation)) {
-    return;
-  }
-
-  const micArgs = [
-    '-s', streamConfig.serial,
-    '--port', '27190',
-    '--no-video',
-    '--no-control',
-    // Defaults to VOICE_RECOGNITION for the same reason as the locked
-    // profiles: MIC is echo-cancelled against the headset speakers, which
-    // suppresses the wearer's voice whenever game audio is loud.
-    '--audio-source', streamConfig.micSource || 'mic-voice-recognition',
-    '--audio-codec', 'aac',
-    // The 128 kbps default smears a close microphone once the wearer raises
-    // their voice over loud game audio. See the locked profile arguments.
-    '--audio-bit-rate=256K'
-  ];
-  sendLog(`[System] Launching secondary scrcpy instance to stream headset microphone.`);
-  const child = spawn(runtimeConfig.scrcpyPath, micArgs, { windowsHide: true });
-  if (!childOwnership.setMicrophone(generation, child)) {
-    terminateProcess(child, 'scrcpy microphone');
-    return;
-  }
-  attachMicrophoneLifecycle(child, generation);
-  try {
-    await waitForChildSpawn(child);
-  } catch (error) {
-    // The lifecycle listener reports microphone launch failures without ending the primary stream.
-  }
 }
 
 function isNativeContextCurrent(context) {
@@ -1005,6 +938,21 @@ async function relaunchLockedStream(context) {
   if (!isNativeContextCurrent(context) || !context.state.allowsReconnect()) {
     throw new Error('Native stream is terminal or no longer active.');
   }
+  // A dropped cast usually means adb marked the TCP/IP transport offline.
+  // Relaunching against it fails every retry, so bring the transport back
+  // first with the same recovery the Start button uses.
+  if (context.request.serial.includes(':')) {
+    const connection = await connectWirelessTarget({
+      target: context.request.serial,
+      runAdb: (args) => runFile(context.runtimeConfig.adbPath, args)
+    });
+    if (!isNativeContextCurrent(context) || !context.state.allowsReconnect()) {
+      throw new Error('Reconnect was superseded.');
+    }
+    if (!connection.success) {
+      throw new Error(connection.error || 'The headset could not be reached over Wi-Fi.');
+    }
+  }
   const attempt = context.state.beginAttempt(context.effectiveProfile);
   const result = await launchLockedProfileAttempt(context, attempt);
   if (!isNativeContextCurrent(context)) {
@@ -1018,61 +966,6 @@ async function relaunchLockedStream(context) {
   result.attemptRecord.published = true;
   sendStreamStatus(result.status);
   return result.status;
-}
-
-async function prepareStreamLaunch(requestedStreamConfig, runtimeConfig) {
-  const displaySize = await getDisplaySize(requestedStreamConfig.serial, runtimeConfig);
-  const streamConfig = normalizeStreamConfig(requestedStreamConfig, displaySize);
-  return { displaySize, streamConfig };
-}
-
-async function launchStream(
-  generation,
-  requestedStreamConfig,
-  runtimeConfig,
-  preparedStream = null,
-  assertStillCurrent = () => {}
-) {
-  if (!streamSession.isCurrent(generation)) {
-    throw new Error('Stream generation is no longer active.');
-  }
-
-  const { displaySize, streamConfig } = preparedStream || await prepareStreamLaunch(requestedStreamConfig, runtimeConfig);
-  assertStillCurrent();
-  const scrcpyVersion = await detectScrcpyMajorVersion(runtimeConfig.scrcpyPath);
-  assertStillCurrent();
-  const args = [
-    ...buildScrcpyArguments({ ...streamConfig, displaySize }, scrcpyVersion),
-    ...getStreamPresentationArgs(requestedStreamConfig),
-    '--window-title',
-    'Quest 3 Stream (Caster)'
-  ];
-  const expectedOutput = formatOutputEstimate(calculateOutputSize(parseCrop(streamConfig.crop), streamConfig.maxSize, 2));
-
-  sendLog(`[System] Launching scrcpy with ${args.length} validated arguments.`);
-  let child;
-  try {
-    child = spawn(runtimeConfig.scrcpyPath, args, { windowsHide: true });
-  } catch (error) {
-    throw new Error(`Failed to launch scrcpy: ${error.message}`);
-  }
-
-  if (!childOwnership.setPrimary(generation, child)) {
-    terminateProcess(child, 'scrcpy');
-    throw new Error('Stream generation is no longer active.');
-  }
-  attachPrimaryLifecycle(child, generation);
-
-  try {
-    await waitForChildSpawn(child);
-    assertStillCurrent();
-  } catch (error) {
-    throw new Error(`Failed to launch scrcpy: ${error.message}`);
-  }
-
-  await launchMicrophoneStream(generation, streamConfig, runtimeConfig);
-  assertStillCurrent();
-  return { expectedOutput };
 }
 
 ipcMain.handle('scan-devices', async (_event, config) => {
@@ -1184,24 +1077,40 @@ ipcMain.handle('preflight-stream', async (_event, serial, config) => {
     if (refreshRateWarning) {
       sendLog(`[System-Warning] ${refreshRateWarning}`);
     }
-    const productionProfile = getProductionProfile(displaySize);
-    const expectedOutput = productionProfile
-      ? formatOutputEstimate(calculateOutputSize(parseCrop(productionProfile.crop), productionProfile.maxSize, 2))
-      : null;
-    const encodersResult = await runFile(runtimeConfig.scrcpyPath, ['--list-encoders']);
     const warnings = [];
     if (displayOverrideWarning) {
       warnings.push(displayOverrideWarning);
     }
-    if (!encodersResult.success) {
-      warnings.push('Unable to enumerate scrcpy encoders; Automatic H.264 remains available.');
+    // Loaded before the locked preflight so that it can describe a headset
+    // that casts from a calibration file as such, rather than as uncalibrated.
+    let calibratedProfiles = null;
+    let calibrationTier = null;
+    try {
+      const identification = identifyDevice({ model: deviceModel, displaySize });
+      const found = loadCalibration(identification.device.id, getCalibrationDirectories());
+      if (found) {
+        assertCalibrationMatchesDisplay(found.calibration, displaySize);
+        calibratedProfiles = getCalibratedProfileAvailability(found.calibration);
+        calibrationTier = found.calibration.calibration;
+      }
+    } catch (error) {
+      // A measured headset silently reverting to "uncalibrated" looks like the
+      // wizard did not work, so say what is wrong with the file instead.
+      warnings.push(error.message);
     }
     let lockedPreflight = null;
     let nativeBundleError = null;
+    recentNativeVerification = null;
     try {
       const nativeRuntime = getVerifiedNativeRuntime();
       const capabilities = await runCapabilityProbe(nativeRuntime, { runFile });
-      lockedPreflight = buildLockedProfilePreflight({ capabilities, displaySize, model: deviceModel });
+      rememberNativeVerification(nativeRuntime, capabilities);
+      lockedPreflight = buildLockedProfilePreflight({
+        capabilities,
+        displaySize,
+        model: deviceModel,
+        calibrationTier
+      });
       warnings.push(...lockedPreflight.warnings);
     } catch (error) {
       nativeBundleError = error.message;
@@ -1237,7 +1146,7 @@ ipcMain.handle('preflight-stream', async (_event, serial, config) => {
             id: identification.device.id,
             name: identification.device.name,
             model: deviceModel,
-            calibration: getLockedProfileSupport(identification).tier,
+            calibration: getLockedProfileSupport(identification, { calibrationTier }).tier,
             matchedBy: identification.matchedBy,
             eye: identification.device.eye
           };
@@ -1249,21 +1158,6 @@ ipcMain.handle('preflight-stream', async (_event, serial, config) => {
       };
       warnings.push(nativeBundleError);
     }
-    let calibratedProfiles = null;
-    let calibrationTier = null;
-    try {
-      const identification = identifyDevice({ model: deviceModel, displaySize });
-      const found = loadCalibration(identification.device.id, getCalibrationDirectories());
-      if (found) {
-        assertCalibrationMatchesDisplay(found.calibration, displaySize);
-        calibratedProfiles = getCalibratedProfileAvailability(found.calibration);
-        calibrationTier = found.calibration.calibration;
-      }
-    } catch (error) {
-      // A measured headset silently reverting to "uncalibrated" looks like the
-      // wizard did not work, so say what is wrong with the file instead.
-      warnings.push(error.message);
-    }
     return {
       success: true,
       adbState,
@@ -1272,9 +1166,6 @@ ipcMain.handle('preflight-stream', async (_event, serial, config) => {
       refreshRateWarning,
       calibratedProfiles,
       calibrationTier,
-      productionProfile,
-      h264Encoders: encodersResult.success ? filterH264Encoders(encodersResult.stdout.split(/\r?\n/)) : [],
-      expectedOutput,
       profiles: lockedPreflight.profiles,
       output: lockedPreflight.output,
       geometry: lockedPreflight.geometry,
@@ -1288,9 +1179,6 @@ ipcMain.handle('preflight-stream', async (_event, serial, config) => {
     return {
       success: false,
       displaySize: null,
-      productionProfile: null,
-      h264Encoders: [],
-      expectedOutput: null,
       profiles: [],
       warnings: [],
       error: error.message
@@ -1327,9 +1215,11 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
       }
       const displaySize = await getDisplaySize(request.serial, runtimeConfig);
       startOperationGate.assertCurrent(operationToken);
-      const nativeRuntime = getVerifiedNativeRuntime();
+      const verification = takeRecentNativeVerification();
+      const nativeRuntime = verification?.nativeRuntime || getVerifiedNativeRuntime();
       startOperationGate.assertCurrent(operationToken);
-      const capabilities = await runCapabilityProbe(nativeRuntime, { runFile });
+      const capabilities = verification?.capabilities
+        || await runCapabilityProbe(nativeRuntime, { runFile });
       startOperationGate.assertCurrent(operationToken);
       const model = await readDeviceModel(request.serial, runtimeConfig);
       startOperationGate.assertCurrent(operationToken);
@@ -1355,6 +1245,7 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
         generation,
         operationToken,
         request,
+        runtimeConfig,
         capabilities,
         nativeRuntime,
         mode: 'locked',
@@ -1401,7 +1292,7 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
       return {
         success: true,
         ...status,
-        expectedOutput: 'Expected stream: 1920x1080 (1080p)'
+        expectedOutput: `Expected stream: ${status.output.width}x${status.output.height}`
       };
     }
     if (requestedStreamConfig && isCalibratedProfileId(requestedStreamConfig.profileId)) {
@@ -1422,7 +1313,8 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
       if (!found) {
         throw new Error(
           `${identification.device.name} has no calibration on this machine. `
-          + 'Run the calibration wizard to measure it.');
+          + 'Run the calibration wizard from a source checkout to measure it '
+          + '(see the README).');
       }
       // The crops are absolute display coordinates, so a calibration measured
       // on a different geometry frames the wrong region rather than failing.
@@ -1434,7 +1326,8 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
       // The calibrated path runs stock scrcpy, so it needs the bundled runtime
       // for the binary and the patched server, but not the capability probe --
       // there is no fork protocol to negotiate.
-      const nativeRuntime = getVerifiedNativeRuntime();
+      const nativeRuntime = takeRecentNativeVerification()?.nativeRuntime
+        || getVerifiedNativeRuntime();
       startOperationGate.assertCurrent(operationToken);
       await requireRetainedChildrenExited();
       startOperationGate.assertCurrent(operationToken);
@@ -1450,6 +1343,7 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
         generation,
         operationToken,
         request,
+        runtimeConfig,
         capabilities: { gpu: null },
         nativeRuntime,
         mode: 'calibrated',
@@ -1504,38 +1398,10 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
         expectedOutput: `Expected stream: ${resolved.output.width}x${resolved.output.height}`
       };
     }
-    const safeSerial = validateAdbSerial(requestedStreamConfig && requestedStreamConfig.serial);
-    const streamConfig = { ...requestedStreamConfig, serial: safeSerial };
-    const preparedStream = await prepareStreamLaunch(streamConfig, runtimeConfig);
-    startOperationGate.assertCurrent(operationToken);
-    await requireRetainedChildrenExited();
-    startOperationGate.assertCurrent(operationToken);
-    if (childOwnership.snapshot().primary) replacementStarted = true;
-    cancelCurrentNativeAttempt();
-    await requireRetainedChildrenExited();
-    startOperationGate.assertCurrent(operationToken);
-    const generation = streamSession.begin();
-    startedGeneration = generation;
-    replacementStarted = true;
-    childOwnership.begin(generation);
-    registerPendingStart(operationToken, generation);
-    const { expectedOutput } = await launchStream(
-      generation,
-      streamConfig,
-      runtimeConfig,
-      preparedStream,
-      () => startOperationGate.assertCurrent(operationToken)
-    );
-    startOperationGate.assertCurrent(operationToken);
-    if (
-      childOwnership.snapshot().generation !== generation
-      || !hasCurrentLivePrimary(streamSession.getRetryState(), childOwnership.snapshot())
-    ) {
-      throw new Error('Legacy stream start was superseded or exited.');
-    }
-    lastStreamRequest = { streamConfig, runtimeConfig };
-    completePendingStart(operationToken);
-    return { success: true, generation, expectedOutput };
+    // Stream requests are locked to { serial, profileId, streamMic }. Anything
+    // that does not name a locked or calibrated profile is rejected rather
+    // than launched with renderer-chosen settings.
+    throw new Error('A supported casting profile is required.');
   } catch (error) {
     if (pendingStart?.operationToken === operationToken) {
       cancelPendingStart();
@@ -1553,6 +1419,9 @@ ipcMain.handle('start-stream', async (_event, requestedStreamConfig, config) => 
         streamSession.stop();
       }
     }
+    // The renderer shows a next step, not this text, so the log is the only
+    // place the underlying cause is kept.
+    sendLog(`[System-Error] Stream start failed: ${error?.message || error}`);
     return createStartFailureResult(error, hadActiveStream, replacementStarted);
   }
 });
@@ -1583,8 +1452,14 @@ ipcMain.handle('request-reconnect', async (_event, generation) => {
   ) {
     return { scheduled: false, retry: 0, delayMs: null };
   }
+  // The renderer asks after it hears the stream exit. A request that arrives
+  // while this generation's stream is still running would kill a healthy cast.
+  const owned = childOwnership.snapshot();
+  if (owned.generation === generation && isChildRunning(owned.primary)) {
+    return { scheduled: false, retry: 0, delayMs: null };
+  }
   const state = streamSession.getRetryState();
-  const delayMs = state.retryCount < state.retryLimit ? [2000, 5000, 10000][state.retryCount] : null;
+  const delayMs = state.retryCount < state.retryLimit ? RECONNECT_DELAYS_MS[state.retryCount] : null;
   const scheduled = streamSession.scheduleReconnect(generation);
   const nextState = streamSession.getRetryState();
   return { scheduled, retry: nextState.retryCount, delayMs: scheduled ? delayMs : null };
@@ -1717,15 +1592,30 @@ ipcMain.handle('set-mic-volume', async (_event, volume) => setActiveStreamVolume
 
 ipcMain.handle('check-paths', async (_event, config) => {
   try {
-    const runtimeConfig = normalizeRuntimeConfig(config);
-    const [adbResult, scrcpyResult] = await Promise.all([
-      runFile(runtimeConfig.adbPath, ['version']),
-      runFile(runtimeConfig.scrcpyPath, ['--version'])
-    ]);
-    return { adb: adbResult.success, scrcpy: scrcpyResult.success };
-  } catch (_error) {
-    return { adb: false, scrcpy: false };
-}
+    // Casting only ever runs the bundled client, so "scrcpy" here reports
+    // whether that bundle passes verification, not a user-supplied path.
+    let scrcpy = true;
+    let scrcpyError = null;
+    try {
+      getVerifiedNativeRuntime();
+    } catch (error) {
+      scrcpy = false;
+      scrcpyError = error.message;
+    }
+    let adb = false;
+    let adbError = null;
+    try {
+      const runtimeConfig = normalizeRuntimeConfig(config);
+      const adbResult = await runFile(runtimeConfig.adbPath, ['version']);
+      adb = adbResult.success;
+      if (!adb) adbError = 'ADB did not run. Clear the custom ADB path to use the bundled copy.';
+    } catch (error) {
+      adbError = error.message;
+    }
+    return { adb, scrcpy, adbError, scrcpyError };
+  } catch (error) {
+    return { adb: false, scrcpy: false, adbError: error.message, scrcpyError: null };
+  }
 });
 
 module.exports = { runFile };

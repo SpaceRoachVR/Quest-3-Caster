@@ -10,6 +10,7 @@ const { contextBridge } = require('electron');
 let streamStatusListener = () => {};
 let streamExitListener = () => {};
 let lastStartPayload = null;
+let scanScenario = 'ready';
 
 const INSPECTION_SERIAL = '1WMHH00000';
 const INSPECTION_IP = '192.168.50.25';
@@ -27,7 +28,12 @@ function preflight() {
 }
 
 contextBridge.exposeInMainWorld('api', {
-  scanDevices: async () => ({ success: true, devices: [{ serial: INSPECTION_SERIAL, status: 'device', isWireless: false }] }),
+  scanDevices: async () => ({
+    success: true,
+    devices: scanScenario === 'none'
+      ? []
+      : [{ serial: INSPECTION_SERIAL, status: scanScenario === 'unauthorized' ? 'unauthorized' : 'device', isWireless: false }]
+  }),
   getHeadsetIP: async () => ({ success: true, ip: INSPECTION_IP }),
   enableTcpIp: async () => ({ success: true }),
   connectWireless: async (target) => ({ success: true, endpoint: target, message: 'inspection connection' }),
@@ -44,6 +50,7 @@ contextBridge.exposeInMainWorld('api', {
   toggleProximitySensor: async () => ({ success: true }),
   onStreamExit: (listener) => { streamExitListener = listener; return () => { streamExitListener = () => {}; }; },
   onStreamStatus: (listener) => { streamStatusListener = listener; return () => { streamStatusListener = () => {}; }; },
+  onMicrophoneExit: () => () => {},
   onLogMessage: () => {},
   setGameVolume: async () => ({ success: true }),
   setMicVolume: async () => ({ success: true })
@@ -51,6 +58,10 @@ contextBridge.exposeInMainWorld('api', {
 
 contextBridge.exposeInMainWorld('rendererInspection', {
   getLastStartPayload: () => lastStartPayload,
+  setScanScenario: (scenario) => {
+    if (!['ready', 'none', 'unauthorized'].includes(scenario)) throw new TypeError('Unsupported inspection scan scenario.');
+    scanScenario = scenario;
+  },
   emitStatus: (status) => streamStatusListener(status),
   emitExit: (event) => streamExitListener(event)
 });

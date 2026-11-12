@@ -64,7 +64,9 @@ npm run calibrate -- --adb resources/native/win32-x64/adb.exe --serial <serial> 
 
 Until you do that, the app still casts — just untilted — and tells you the tilt has not been confirmed.
 
-Your own calibration always takes priority over anything shipped with the app, so re-running it on your own headset is always safe.
+The wizard saves to your per-user folder, `%APPDATA%\Quest 3 Caster\calibration`, and the app reads that folder before the calibration it ships with. Your own calibration therefore always takes priority, and re-running the wizard on your own headset is always safe. To write a calibration into the repository instead, for example to contribute one for a new headset, add `--out calibration/<device>.json`.
+
+The wizard needs Node.js and a source checkout of this repository (see [Development](#development)); it is not included in the installer.
 
 ## What you actually get
 
@@ -147,7 +149,7 @@ npm start
 5. Quest 3 Caster does not use Android's pairing-code workflow or Meta Horizon Link Auto-Connect because neither exposes an ADB connection the app can use.
 6. USB setup is required again after every headset restart because legacy ADB TCP/IP does not survive a reboot.
 7. On a Quest 3, use **Low Latency** for responsive gameplay, and choose **Stabilized** only when the GPU and display preflight succeeds and its added delay is acceptable. On a calibrated headset there is one profile per framing and nothing further to pick.
-8. Use **Settings** for custom ADB/scrcpy paths, executable validation, and the rolling local log folder.
+8. Use **Settings** for a custom ADB path, executable validation, and the rolling local log folder. A custom ADB path must be the full path to a file named `adb.exe` on this computer. Casting always uses the bundled casting engine.
 
 ## OBS Studio
 

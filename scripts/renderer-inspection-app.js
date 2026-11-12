@@ -83,8 +83,28 @@ async function inspect() {
     terminal: null
   });
 
+  await evaluate(window, "window.rendererInspection.setScanScenario('none')", 'set missing-device scenario');
+  await click(window, '#scan-usb-button');
+  await waitFor(window, "document.querySelector('#availability-message').textContent === 'No headset found.'", 'missing-device message');
+  const missingDevice = await evaluate(window, `({
+    startDisabled: document.querySelector('#start-cast-button').disabled,
+    connection: document.querySelector('#connection-status').textContent,
+    connectionState: document.querySelector('#connection-status').dataset.state
+  })`, 'missing-device state');
+  assert.deepEqual(missingDevice, { startDisabled: true, connection: 'Not connected', connectionState: 'disconnected' });
+
+  await evaluate(window, "window.rendererInspection.setScanScenario('unauthorized')", 'set unauthorized-device scenario');
+  await click(window, '#scan-usb-button');
+  await waitFor(window, "document.querySelector('#availability-message').textContent === 'Waiting for you to allow USB debugging.'", 'USB approval message');
+  const unauthorized = await evaluate(window, `({
+    startDisabled: document.querySelector('#start-cast-button').disabled,
+    connectionState: document.querySelector('#connection-status').dataset.state
+  })`, 'unauthorized-device state');
+  assert.deepEqual(unauthorized, { startDisabled: true, connectionState: 'disconnected' });
+
   // The supported first-time flow: scan USB, pick the headset, get its IP and
   // enable ADB over Wi-Fi. Casting stays disabled until that completes.
+  await evaluate(window, "window.rendererInspection.setScanScenario('ready')", 'set authorized-device scenario');
   await click(window, '#scan-usb-button');
   await waitFor(window, "document.querySelectorAll('#usb-device-list .usb-device-button').length === 1", 'scanned USB headset');
   await click(window, '#usb-device-list .usb-device-button');
@@ -92,12 +112,16 @@ async function inspect() {
   const paired = await evaluate(window, `({
     ip: document.querySelector('#headset-ip-input').value,
     pairingMessage: document.querySelector('#pairing-message').textContent,
-    availability: document.querySelector('#availability-message').textContent
+    availability: document.querySelector('#availability-message').textContent,
+    connection: document.querySelector('#connection-status').textContent,
+    connectionState: document.querySelector('#connection-status').dataset.state
   })`, 'paired state');
   assert.deepEqual(paired, {
     ip: '192.168.50.25',
     pairingMessage: 'Ready. The USB cable may now be removed.',
-    availability: 'Ready to cast.'
+    availability: 'Ready to cast.',
+    connection: 'Connected',
+    connectionState: 'connected'
   });
 
   await click(window, '#square-output');
@@ -114,6 +138,29 @@ async function inspect() {
   fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
   fs.writeFileSync(screenshotPath, (await window.capturePage()).toPNG());
 
+  const wideLayout = await evaluate(window, `({
+    columns: getComputedStyle(document.querySelector('.workspace-grid')).gridTemplateColumns.split(' ').length,
+    horizontalOverflow: document.documentElement.scrollWidth > innerWidth
+  })`, 'wide layout');
+  assert.deepEqual(wideLayout, { columns: 2, horizontalOverflow: false });
+
+  window.setSize(900, 1050);
+  const compactLayout = await evaluate(window, `({
+    columns: getComputedStyle(document.querySelector('.workspace-grid')).gridTemplateColumns.split(' ').length,
+    horizontalOverflow: document.documentElement.scrollWidth > innerWidth
+  })`, 'compact layout');
+  assert.deepEqual(compactLayout, { columns: 1, horizontalOverflow: false });
+  const compactScreenshotPath = screenshotPath.replace(/\.png$/, '-compact.png');
+  fs.writeFileSync(compactScreenshotPath, (await window.capturePage()).toPNG());
+
+  await click(window, '#settings-button');
+  const settingsLayout = await evaluate(window, `({
+    visible: !document.querySelector('#settings-view').classList.contains('hidden'),
+    horizontalOverflow: document.documentElement.scrollWidth > innerWidth
+  })`, 'settings layout');
+  assert.deepEqual(settingsLayout, { visible: true, horizontalOverflow: false });
+  await click(window, '#settings-back-button');
+
   await click(window, '#widescreen-output');
   await click(window, '#stabilized-profile');
   await click(window, '#start-cast-button');
@@ -125,23 +172,25 @@ async function inspect() {
   assert.equal(ready.streamMic, false);
   const casting = await evaluate(window, `({
     connection: document.querySelector('#connection-status').textContent,
+    connectionState: document.querySelector('#connection-status').dataset.state,
     availability: document.querySelector('#availability-message').textContent
   })`, 'casting state');
-  assert.deepEqual(casting, { connection: 'Casting', availability: 'Casting is active.' });
+  assert.deepEqual(casting, { connection: 'Casting', connectionState: 'casting', availability: 'Casting is active.' });
 
   await click(window, '#start-cast-button');
   await waitFor(window, "document.querySelector('#start-cast-button').textContent === 'Start casting'", 'stopped cast');
   const stopped = await evaluate(window, `({
     connection: document.querySelector('#connection-status').textContent,
+    connectionState: document.querySelector('#connection-status').dataset.state,
     availability: document.querySelector('#availability-message').textContent,
     startDisabled: document.querySelector('#start-cast-button').disabled
   })`, 'stopped state');
   // Stopping keeps the wireless endpoint so the user can start again without
   // a USB re-scan.
-  assert.deepEqual(stopped, { connection: 'Connected', availability: 'Ready to cast.', startDisabled: false });
+  assert.deepEqual(stopped, { connection: 'Connected', connectionState: 'connected', availability: 'Ready to cast.', startDisabled: false });
 
   assert.deepEqual(consoleProblems, [], `Renderer reported console problems.${describeConsoleProblems()}`);
-  const summary = { completed: true, initial, paired, squareOutput, ready, casting, stopped, screenshotPath };
+  const summary = { completed: true, initial, missingDevice, unauthorized, paired, squareOutput, wideLayout, compactLayout, settingsLayout, ready, casting, stopped, screenshotPath, compactScreenshotPath };
   fs.writeFileSync(resultPath, JSON.stringify(summary, null, 2));
   window.destroy();
 }

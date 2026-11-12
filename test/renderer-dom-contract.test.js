@@ -128,9 +128,15 @@ test('game and microphone levels are adjustable and debounced', () => {
   }
 });
 
-test('uses the selected dark consumer workspace visual system without gradients', () => {
-  assert.match(styles, /#10151d/);
+test('uses the studio console palette and separates casting from configuration', () => {
+  assert.match(styles, /--canvas: #111820/);
+  assert.match(styles, /--accent: #48c7d8/);
   assert.match(styles, /\.workspace\s*\{/);
+  assert.match(styles, /\.workspace-grid\s*\{/);
+  assert.match(html, /class="panel connection-panel"/);
+  assert.match(html, /class="panel output-panel"/);
+  assert.match(html, /class="panel preferences-panel"/);
+  assert.match(html, /class="panel audio-panel"/);
   assert.doesNotMatch(styles, /linear-gradient|radial-gradient/);
   assert.doesNotMatch(styles, /saved-device-row|modal-backdrop/);
 });
