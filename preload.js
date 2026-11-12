@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('stream-status', listener);
     return () => ipcRenderer.removeListener('stream-status', listener);
   },
+  onMicrophoneExit: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('microphone-exit', listener);
+    return () => ipcRenderer.removeListener('microphone-exit', listener);
+  },
   onLogMessage: (callback) => ipcRenderer.on('log-message', (event, ...args) => callback(...args)),
   setGameVolume: (volume) => ipcRenderer.invoke('set-game-volume', volume),
   setMicVolume: (volume) => ipcRenderer.invoke('set-mic-volume', volume)

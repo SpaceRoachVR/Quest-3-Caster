@@ -31,6 +31,7 @@ const { decodeScreencapPng } = require('../lib/png-decode');
 const { parseWmSizes, describeDisplayOverride } = require('../lib/display-geometry');
 const { identifyDevice } = require('../lib/device-registry');
 const { buildCalibrationFile } = require('../lib/calibration-file');
+const { getUserCalibrationDirectory, saveCalibration } = require('../lib/calibration-store');
 const {
   analyzeEye,
   buildAngleSweep,
@@ -257,11 +258,28 @@ async function main() {
     notes: options.frame ? `Analysed from ${path.basename(options.frame)}.` : null,
   });
 
-  const outputPath = path.resolve(
-    options.out || path.join('calibration', `${device.id}.json`));
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.writeFileSync(outputPath, `${JSON.stringify(calibration, null, 2)}\n`);
+  // A run measures the headset on this desk, so by default it goes to the
+  // per-user folder, which the app reads before anything shipped with it.
+  // Writing into ./calibration would overwrite the shipped file for a whole
+  // model; that takes an explicit --out.
+  let outputPath;
+  if (options.out) {
+    outputPath = path.resolve(options.out);
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, `${JSON.stringify(calibration, null, 2)}\n`);
+  } else {
+    const userDirectory = getUserCalibrationDirectory();
+    if (!userDirectory) {
+      throw new Error('APPDATA is not set, so there is no per-user folder to write to. '
+        + 'Pass --out <file> to choose where the calibration is saved.');
+    }
+    outputPath = saveCalibration(userDirectory, device.id, calibration);
+  }
   process.stdout.write(`Calibration (${calibration.calibration}) written to ${outputPath}\n`);
+  if (!options.out) {
+    process.stdout.write('Quest 3 Caster uses this file ahead of the calibration it ships with.\n'
+      + `To contribute a shipped calibration instead, pass --out calibration/${device.id}.json\n`);
+  }
 
   if (options.angle === null) {
     process.stdout.write([
