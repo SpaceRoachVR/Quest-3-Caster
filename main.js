@@ -127,8 +127,14 @@ function createWindow() {
     backgroundColor: '#10151d'
   });
 
+  // The preload API is attached to whatever document this window holds, so the
+  // window must never leave index.html (a dropped file would otherwise navigate
+  // it) or open a second one.
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
   mainWindow.loadFile('index.html');
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => mainWindow?.show());
   mainWindow.on('closed', () => {
     mainWindow = null;
     cleanup();
@@ -945,7 +951,6 @@ async function launchLockedProfileAttempt(context, attempt) {
     clearOwnedNativeChildren(context, child);
     throw error;
   }
-  const ownedAfterMicrophone = childOwnership.snapshot();
   try {
     nativeContextAuthority.assertAttemptCompletion({
       context,
@@ -1675,7 +1680,13 @@ function runVolumeScript(pid, validatedVolume) {
   // PowerShell -EncodedCommand expects UTF-16LE base64 — avoids ALL quoting issues
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   return new Promise((resolve) => {
-    execFile('powershell', [
+    // An absolute path keeps a powershell.exe planted in the working directory
+    // or earlier on PATH from being run in its place.
+    const powershellPath = path.join(
+      process.env.SystemRoot || 'C:\\Windows',
+      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'
+    );
+    execFile(powershellPath, [
       '-NonInteractive', '-NoProfile', '-NoLogo',
       '-EncodedCommand', encoded
     ], { timeout: 10000, windowsHide: true }, (error, stdout, stderr) => {

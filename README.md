@@ -111,7 +111,7 @@ Notes on the ones that actually matter:
 
 ## Prerequisites (building from source)
 
-Node.js 18 or later, in addition to the system requirements above. End users installing the release do not need Node.js — everything is bundled.
+Node.js 22.12 or later (the minimum Electron 43 supports), in addition to the system requirements above. End users installing the release do not need Node.js — everything is bundled.
 
 ## Distribution (end-user install)
 
